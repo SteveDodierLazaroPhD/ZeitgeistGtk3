@@ -33,6 +33,10 @@
 #include "gtktreeview.h"
 #include "gtkbox.h"
 
+#ifdef GDK_WINDOWING_X11
+#include <gdk/gdkx.h>
+#endif
+
 G_BEGIN_DECLS
 
 #define SETTINGS_KEY_LOCATION_MODE       "location-mode"
@@ -47,6 +51,35 @@ G_BEGIN_DECLS
 #define SETTINGS_KEY_SORT_DIRECTORIES_FIRST "sort-directories-first"
 
 #define GTK_FILE_CHOOSER_GET_IFACE(inst)  (G_TYPE_INSTANCE_GET_INTERFACE ((inst), GTK_TYPE_FILE_CHOOSER, GtkFileChooserIface))
+
+typedef struct __ZeitgeistFileDialogData {
+	gchar          *actor_name;
+	GFile          *current_file;
+	const gchar    *interpretation;
+	GSList         *files;
+	GSList         *fileinfos;
+	GtkFileChooser *chooser;
+	gboolean        internal_report_type;
+} _ZeitgeistFileDialogData;
+
+typedef struct __ZeitgeistFileDialogFileData {
+	gchar *uri;
+	gchar *display_name;
+	gchar *origin;
+	gchar *mime_type;
+} _ZeitgeistFileDialogFileData;
+
+struct _GtkFileChooserDialogPrivate
+{
+  GtkWidget *widget;
+
+  /* for use with GtkFileChooserEmbed */
+  gboolean response_requested;
+
+  #ifdef GDK_WINDOWING_X11
+  Window parent_xid;
+  #endif
+};
 
 typedef struct _GtkFileChooserIface GtkFileChooserIface;
 
@@ -95,6 +128,8 @@ struct _GtkFileChooserIface
   GtkFileChooserConfirmation (*confirm_overwrite) (GtkFileChooser *chooser);
 };
 
+GSList        *_gtk_file_chooser_get_files               (GtkFileChooser    *chooser,
+                                                          const gboolean     internal);
 GtkFileSystem *_gtk_file_chooser_get_file_system         (GtkFileChooser    *chooser);
 gboolean       _gtk_file_chooser_add_shortcut_folder     (GtkFileChooser    *chooser,
 							  GFile             *folder,
@@ -104,6 +139,9 @@ gboolean       _gtk_file_chooser_remove_shortcut_folder  (GtkFileChooser    *cho
 							  GError           **error);
 GSList *       _gtk_file_chooser_list_shortcut_folder_files (GtkFileChooser *chooser);
 
+void           _gtk_file_chooser_log_zeitgeist_event     (GtkFileChooser *chooser,
+                                                          GSList         *files,
+                                                          gboolean        internal_report_type);
 
 G_END_DECLS
 

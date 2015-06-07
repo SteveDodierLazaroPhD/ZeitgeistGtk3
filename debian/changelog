@@ -1,3 +1,12 @@
+gtk+3.0 (3.14.13-0ubuntu1ppa1) vivid; urgency=medium
+
+  * UCL study: adding events for open/save and programmatic file access in file dialogs
+   + one event per non-internal call to get_file-like methods, with subjects per type of widget
+   + special event for when a button's file is set
+  * Adding a file dialog example to test open/save code
+
+ -- Steve Dodier-Lazaro <sidnioulz@gmail.com>  Sun, 07 Jun 2015 17:25:37 +0100
+
 gtk+3.0 (3.14.13-0ubuntu1) vivid; urgency=medium
 
   * Update Vcs-Bzr for vivid stable branch

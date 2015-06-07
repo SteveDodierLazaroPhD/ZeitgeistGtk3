@@ -1,0 +1,1165 @@
+Index: gtk+3.0-3.14.13/configure.ac
+===================================================================
+--- gtk+3.0-3.14.13.orig/configure.ac
++++ gtk+3.0-3.14.13/configure.ac
+@@ -507,6 +507,24 @@ else
+   fi
+ fi
+ 
++dnl ************************************
++dnl *** Check for libzeitgeist (GIO) ***
++dnl ************************************
++PKG_CHECK_EXISTS(zeitgeist-1.0, [have_zeitgeist_deps=true], [have_zeitgeist_deps=false])
++
++AC_MSG_CHECKING(zeitgeist-1.0)
++if $PKG_CONFIG --exists zeitgeist-1.0 ; then
++  AC_DEFINE(__ZEITGEIST_TRACKER__, 1, [Have Zeitgeist])
++
++  CFLAGS="$CFLAGS `$PKG_CONFIG --cflags zeitgeist-1.0`"
++  AC_SUBST(CFLAGS)
++  AC_MSG_RESULT($CFLAGS)
++
++else
++  AC_MSG_ERROR([*** Working Zeitgeist library and headers not found ***])
++fi
++
++
+ # Build time sanity check...
+ AM_SANITY_CHECK
+ 
+Index: gtk+3.0-3.14.13/examples/Makefile.am
+===================================================================
+--- gtk+3.0-3.14.13.orig/examples/Makefile.am
++++ gtk+3.0-3.14.13/examples/Makefile.am
+@@ -28,7 +28,8 @@ noinst_PROGRAMS = \
+ 	grid-packing				\
+ 	drawing					\
+ 	builder					\
+-	search-bar
++	search-bar				\
++	filedialog
+ 
+ EXTRA_DIST = builder.ui
+ 
+Index: gtk+3.0-3.14.13/examples/filedialog.c
+===================================================================
+--- /dev/null
++++ gtk+3.0-3.14.13/examples/filedialog.c
+@@ -0,0 +1,555 @@
++#include <stdlib.h>
++#include <gtk/gtk.h>
++#include <glib/gprintf.h>
++
++static void
++activate_toggle (GSimpleAction *action,
++                 GVariant      *parameter,
++                 gpointer       user_data)
++{
++  GVariant *state;
++
++  state = g_action_get_state (G_ACTION (action));
++  g_action_change_state (G_ACTION (action), g_variant_new_boolean (!g_variant_get_boolean (state)));
++  g_variant_unref (state);
++}
++
++static void
++change_fullscreen_state (GSimpleAction *action,
++                         GVariant      *state,
++                         gpointer       user_data)
++{
++  if (g_variant_get_boolean (state))
++    gtk_window_fullscreen (user_data);
++  else
++    gtk_window_unfullscreen (user_data);
++
++  g_simple_action_set_state (action, state);
++}
++
++static GtkClipboard *
++get_clipboard (GtkWidget *widget)
++{
++  return gtk_widget_get_clipboard (widget, gdk_atom_intern_static_string ("CLIPBOARD"));
++}
++
++static void
++window_open (GSimpleAction *action,
++             GVariant      *parameter,
++             gpointer       user_data)
++{
++  GtkWindow *window = GTK_WINDOW (user_data);
++  GtkWidget *dialog;
++
++  dialog = gtk_file_chooser_dialog_new ("Open File",
++                                        window,
++                                        GTK_FILE_CHOOSER_ACTION_OPEN,
++                                        "Cancel", GTK_RESPONSE_CANCEL,
++                                        "Accept", GTK_RESPONSE_ACCEPT,
++                                        NULL);
++
++  if (gtk_dialog_run (GTK_DIALOG (dialog)) == GTK_RESPONSE_ACCEPT) {
++    char *filename;
++    filename = gtk_file_chooser_get_filename (GTK_FILE_CHOOSER (dialog));
++    g_printf ("OPENING FILE `%s`\n", filename);
++    g_free (filename);
++  }
++
++  gtk_widget_destroy (dialog);
++}
++
++static void
++window_copy (GSimpleAction *action,
++             GVariant      *parameter,
++             gpointer       user_data)
++{
++  GtkWindow *window = GTK_WINDOW (user_data);
++  GtkTextView *text = g_object_get_data ((GObject*)window, "plugman-text");
++
++  gtk_text_buffer_copy_clipboard (gtk_text_view_get_buffer (text),
++                                  get_clipboard ((GtkWidget*) text));
++}
++
++static void
++window_paste (GSimpleAction *action,
++              GVariant      *parameter,
++              gpointer       user_data)
++{
++  GtkWindow *window = GTK_WINDOW (user_data);
++  GtkTextView *text = g_object_get_data ((GObject*)window, "plugman-text");
++
++  gtk_text_buffer_paste_clipboard (gtk_text_view_get_buffer (text),
++                                   get_clipboard ((GtkWidget*) text),
++                                   NULL,
++                                   TRUE);
++
++}
++
++static void
++widget_open  (GSimpleAction *action,
++              GVariant      *parameter,
++              gpointer       user_data)
++{
++  GtkWidget *opener = GTK_WIDGET (user_data);
++
++  GFile *file = gtk_file_chooser_get_file (GTK_FILE_CHOOSER (opener));
++
++  if (file)
++    g_printf ("File opened through widget: %s\n", g_file_get_path (file));
++
++  g_object_unref (file);
++}
++
++static void
++btn_file_set  (GtkFileChooserButton *btn,
++               gpointer       user_data)
++{
++  GFile *file = gtk_file_chooser_get_file (GTK_FILE_CHOOSER (btn));
++
++  if (file)
++    g_printf ("File set through button: %s\n", g_file_get_path (file));
++
++  g_object_unref (file);
++}
++
++static GActionEntry win_entries[] = {
++  { "open", window_open, NULL, NULL, NULL },
++  { "copy", window_copy, NULL, NULL, NULL },
++  { "paste", window_paste, NULL, NULL, NULL },
++  { "fullscreen", activate_toggle, NULL, "false", change_fullscreen_state }
++};
++
++static void
++new_window (GApplication *app,
++            GFile        *file)
++{
++  GtkWidget *window, *grid, *scrolled, *view, *opener, *button, *choosebutton;
++
++  window = gtk_application_window_new (GTK_APPLICATION (app));
++  gtk_window_set_default_size ((GtkWindow*)window, 640, 480);
++  g_action_map_add_action_entries (G_ACTION_MAP (window), win_entries, G_N_ELEMENTS (win_entries), window);
++  gtk_window_set_title (GTK_WINDOW (window), "File Chooser Tests");
++
++  grid = gtk_grid_new ();
++  gtk_container_add (GTK_CONTAINER (window), grid);
++
++  scrolled = gtk_scrolled_window_new (NULL, NULL);
++  gtk_widget_set_hexpand (scrolled, TRUE);
++  gtk_widget_set_vexpand (scrolled, TRUE);
++  view = gtk_text_view_new ();
++
++  g_object_set_data ((GObject*)window, "plugman-text", view);
++
++  gtk_container_add (GTK_CONTAINER (scrolled), view);
++
++  opener = gtk_file_chooser_widget_new (GTK_FILE_CHOOSER_ACTION_OPEN);
++  button = gtk_button_new_with_mnemonic ("_Open");
++  choosebutton = gtk_file_chooser_button_new ("Choose Folder", GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER);
++
++  g_signal_connect (button, "button-release-event", G_CALLBACK (widget_open), opener);
++  g_signal_connect (choosebutton, "file-set", G_CALLBACK (btn_file_set), NULL);
++
++  gtk_grid_attach (GTK_GRID (grid), opener, 0, 0, 1, 1);
++  gtk_grid_attach (GTK_GRID (grid), button, 0, 1, 1, 1);
++  gtk_grid_attach (GTK_GRID (grid), scrolled, 1, 0, 1, 1);
++  gtk_grid_attach (GTK_GRID (grid), choosebutton, 1, 1, 1, 1);
++
++  if (file != NULL)
++    {
++      gchar *contents;
++      gsize length;
++
++      if (g_file_load_contents (file, NULL, &contents, &length, NULL, NULL))
++        {
++          GtkTextBuffer *buffer;
++
++          buffer = gtk_text_view_get_buffer (GTK_TEXT_VIEW (view));
++          gtk_text_buffer_set_text (buffer, contents, length);
++          g_free (contents);
++        }
++    }
++
++  gtk_widget_show_all (GTK_WIDGET (window));
++}
++
++static void
++plug_man_activate (GApplication *application)
++{
++  new_window (application, NULL);
++}
++
++static void
++plug_man_open (GApplication  *application,
++                GFile        **files,
++                gint           n_files,
++                const gchar   *hint)
++{
++  gint i;
++
++  for (i = 0; i < n_files; i++)
++    new_window (application, files[i]);
++}
++
++typedef GtkApplication PlugMan;
++typedef GtkApplicationClass PlugManClass;
++
++G_DEFINE_TYPE (PlugMan, plug_man, GTK_TYPE_APPLICATION)
++
++static void
++plug_man_finalize (GObject *object)
++{
++  G_OBJECT_CLASS (plug_man_parent_class)->finalize (object);
++}
++
++static void
++show_about (GSimpleAction *action,
++            GVariant      *parameter,
++            gpointer       user_data)
++{
++  gtk_show_about_dialog (NULL,
++                         "program-name", "Plugman",
++                         "title", "About Plugman",
++                         "comments", "A cheap Bloatpad clone.",
++                         NULL);
++}
++
++
++static void
++quit_app (GSimpleAction *action,
++          GVariant      *parameter,
++          gpointer       user_data)
++{
++  GList *list, *next;
++  GtkWindow *win;
++
++  g_print ("Going down...\n");
++
++  list = gtk_application_get_windows (GTK_APPLICATION (g_application_get_default ()));
++  while (list)
++    {
++      win = list->data;
++      next = list->next;
++
++      gtk_widget_destroy (GTK_WIDGET (win));
++
++      list = next;
++    }
++}
++
++static gboolean is_red_plugin_enabled;
++static gboolean is_black_plugin_enabled;
++
++static gboolean
++plugin_enabled (const gchar *name)
++{
++  if (g_strcmp0 (name, "red") == 0)
++    return is_red_plugin_enabled;
++  else
++    return is_black_plugin_enabled;
++}
++
++static GMenuModel *
++find_plugin_menu (void)
++{
++  return (GMenuModel*) g_object_get_data (G_OBJECT (g_application_get_default ()), "plugin-menu");
++}
++
++static void
++plugin_action (GAction  *action,
++               GVariant *parameter,
++               gpointer  data)
++{
++  GApplication *app;
++  GList *list;
++  GtkWindow *window;
++  GtkWidget *text;
++  GdkRGBA color;
++
++  app = g_application_get_default ();
++  list = gtk_application_get_windows (GTK_APPLICATION (app));
++  window = GTK_WINDOW (list->data);
++  text = g_object_get_data ((GObject*)window, "plugman-text");
++
++  gdk_rgba_parse (&color, g_action_get_name (action));
++
++  gtk_widget_override_color (text, 0, &color);
++}
++
++static void
++enable_plugin (const gchar *name)
++{
++  GMenuModel *plugin_menu;
++  GAction *action;
++
++  g_print ("Enabling '%s' plugin\n", name);
++
++  action = (GAction *)g_simple_action_new (name, NULL);
++  g_signal_connect (action, "activate", G_CALLBACK (plugin_action), (gpointer)name);
++  g_action_map_add_action (G_ACTION_MAP (g_application_get_default ()), action);
++  g_print ("Actions of '%s' plugin added\n", name);
++  g_object_unref (action);
++
++  plugin_menu = find_plugin_menu ();
++  if (plugin_menu)
++    {
++      GMenu *section;
++      GMenuItem *item;
++      gchar *label;
++      gchar *action_name;
++
++      section = g_menu_new ();
++      label = g_strdup_printf ("Turn text %s", name);
++      action_name = g_strconcat ("app.", name, NULL);
++      g_menu_insert (section, 0, label, action_name);
++      g_free (label);
++      g_free (action_name);
++      item = g_menu_item_new_section (NULL, (GMenuModel*)section);
++      g_menu_item_set_attribute (item, "id", "s", name);
++      g_menu_append_item (G_MENU (plugin_menu), item);
++      g_object_unref (item);
++      g_object_unref (section);
++      g_print ("Menus of '%s' plugin added\n", name);
++    }
++  else
++    g_warning ("Plugin menu not found\n");
++
++  if (g_strcmp0 (name, "red") == 0)
++    is_red_plugin_enabled = TRUE;
++  else
++    is_black_plugin_enabled = TRUE;
++}
++
++static void
++disable_plugin (const gchar *name)
++{
++  GMenuModel *plugin_menu;
++
++  g_print ("Disabling '%s' plugin\n", name);
++
++  plugin_menu = find_plugin_menu ();
++  if (plugin_menu)
++    {
++      const gchar *id;
++      gint i;
++
++      for (i = 0; i < g_menu_model_get_n_items (plugin_menu); i++)
++        {
++           if (g_menu_model_get_item_attribute (plugin_menu, i, "id", "s", &id) &&
++               g_strcmp0 (id, name) == 0)
++             {
++               g_menu_remove (G_MENU (plugin_menu), i);
++               g_print ("Menus of '%s' plugin removed\n", name);
++             }
++        }
++    }
++  else
++    g_warning ("Plugin menu not found\n");
++
++  g_action_map_remove_action (G_ACTION_MAP (g_application_get_default ()), name);
++  g_print ("Actions of '%s' plugin removed\n", name);
++
++  if (g_strcmp0 (name, "red") == 0)
++    is_red_plugin_enabled = FALSE;
++  else
++    is_black_plugin_enabled = FALSE;
++}
++
++static void
++enable_or_disable_plugin (GtkToggleButton *button,
++                          const gchar     *name)
++{
++  if (plugin_enabled (name))
++    disable_plugin (name);
++  else
++    enable_plugin (name);
++}
++
++
++static void
++configure_plugins (GSimpleAction *action,
++                   GVariant      *parameter,
++                   gpointer       user_data)
++{
++  GtkBuilder *builder;
++  GtkWidget *dialog;
++  GtkWidget *check;
++  GError *error = NULL;
++
++  builder = gtk_builder_new ();
++  gtk_builder_add_from_string (builder,
++                               "<interface>"
++                               "  <object class='GtkDialog' id='plugin-dialog'>"
++                               "    <property name='border-width'>12</property>"
++                               "    <property name='title'>Plugins</property>"
++                               "    <child internal-child='vbox'>"
++                               "      <object class='GtkBox' id='content-area'>"
++                               "        <property name='visible'>True</property>"
++                               "        <child>"
++                               "          <object class='GtkCheckButton' id='red-plugin'>"
++                               "            <property name='label' translatable='yes'>Red Plugin - turn your text red</property>"
++                               "            <property name='visible'>True</property>"
++                               "          </object>"
++                               "        </child>"
++                               "        <child>"
++                               "          <object class='GtkCheckButton' id='black-plugin'>"
++                               "            <property name='label' translatable='yes'>Black Plugin - turn your text black</property>"
++                               "            <property name='visible'>True</property>"
++                               "          </object>"
++                               "        </child>"
++                               "      </object>"
++                               "    </child>"
++                               "    <child internal-child='action_area'>"
++                               "      <object class='GtkButtonBox' id='action-area'>"
++                               "        <property name='visible'>True</property>"
++                               "        <child>"
++                               "          <object class='GtkButton' id='close-button'>"
++                               "            <property name='label' translatable='yes'>Close</property>"
++                               "            <property name='visible'>True</property>"
++                               "          </object>"
++                               "        </child>"
++                               "      </object>"
++                               "    </child>"
++                               "    <action-widgets>"
++                               "      <action-widget response='-5'>close-button</action-widget>"
++                               "    </action-widgets>"
++                               "  </object>"
++                               "</interface>", -1, &error);
++  if (error)
++    {
++      g_warning ("%s", error->message);
++      g_error_free (error);
++      return;
++    }
++
++  dialog = (GtkWidget *)gtk_builder_get_object (builder, "plugin-dialog");
++  check = (GtkWidget *)gtk_builder_get_object (builder, "red-plugin");
++  gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (check), plugin_enabled ("red"));
++  g_signal_connect (check, "toggled", G_CALLBACK (enable_or_disable_plugin), "red");
++  check = (GtkWidget *)gtk_builder_get_object (builder, "black-plugin");
++  gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (check), plugin_enabled ("black"));
++  g_signal_connect (check, "toggled", G_CALLBACK (enable_or_disable_plugin), "black");
++
++  g_signal_connect (dialog, "response", G_CALLBACK (gtk_widget_destroy), NULL);
++
++  gtk_window_present (GTK_WINDOW (dialog));
++}
++
++static GActionEntry app_entries[] = {
++  { "about", show_about, NULL, NULL, NULL },
++  { "quit", quit_app, NULL, NULL, NULL },
++  { "plugins", configure_plugins, NULL, NULL, NULL },
++};
++
++static void
++plug_man_startup (GApplication *application)
++{
++  GtkBuilder *builder;
++
++  G_APPLICATION_CLASS (plug_man_parent_class)
++    ->startup (application);
++
++  g_action_map_add_action_entries (G_ACTION_MAP (application), app_entries, G_N_ELEMENTS (app_entries), application);
++
++  builder = gtk_builder_new ();
++  gtk_builder_add_from_string (builder,
++                               "<interface>"
++                               "  <menu id='app-menu'>"
++                               "    <section>"
++                               "      <item>"
++                               "        <attribute name='label' translatable='yes'>_About Plugman</attribute>"
++                               "        <attribute name='action'>app.about</attribute>"
++                               "      </item>"
++                               "    </section>"
++                               "    <section>"
++                               "      <item>"
++                               "        <attribute name='label' translatable='yes'>_Quit</attribute>"
++                               "        <attribute name='action'>app.quit</attribute>"
++                               "        <attribute name='accel'>&lt;Primary&gt;q</attribute>"
++                               "      </item>"
++                               "    </section>"
++                               "  </menu>"
++                               "  <menu id='menubar'>"
++                               "    <submenu>"
++                               "      <attribute name='label' translatable='yes'>_Edit</attribute>"
++                               "      <section>"
++                               "        <item>"
++                               "          <attribute name='label' translatable='yes'>_Open</attribute>"
++                               "          <attribute name='action'>win.open</attribute>"
++                               "        </item>"
++                               "        <item>"
++                               "          <attribute name='label' translatable='yes'>_Copy</attribute>"
++                               "          <attribute name='action'>win.copy</attribute>"
++                               "        </item>"
++                               "        <item>"
++                               "          <attribute name='label' translatable='yes'>_Paste</attribute>"
++                               "          <attribute name='action'>win.paste</attribute>"
++                               "        </item>"
++                               "      </section>"
++                               "      <item><link name='section' id='plugins'>"
++                               "      </link></item>"
++                               "      <section>"
++                               "        <item>"
++                               "          <attribute name='label' translatable='yes'>Plugins</attribute>"
++                               "          <attribute name='action'>app.plugins</attribute>"
++                               "        </item>"
++                               "      </section>"
++                               "    </submenu>"
++                               "    <submenu>"
++                               "      <attribute name='label' translatable='yes'>_View</attribute>"
++                               "      <section>"
++                               "        <item>"
++                               "          <attribute name='label' translatable='yes'>_Fullscreen</attribute>"
++                               "          <attribute name='action'>win.fullscreen</attribute>"
++                               "        </item>"
++                               "      </section>"
++                               "    </submenu>"
++                               "  </menu>"
++                               "</interface>", -1, NULL);
++  gtk_application_set_app_menu (GTK_APPLICATION (application), G_MENU_MODEL (gtk_builder_get_object (builder, "app-menu")));
++  gtk_application_set_menubar (GTK_APPLICATION (application), G_MENU_MODEL (gtk_builder_get_object (builder, "menubar")));
++  g_object_set_data_full (G_OBJECT (application), "plugin-menu", gtk_builder_get_object (builder, "plugins"), g_object_unref);
++  g_object_unref (builder);
++}
++
++static void
++plug_man_init (PlugMan *app)
++{
++}
++
++static void
++plug_man_class_init (PlugManClass *class)
++{
++  GApplicationClass *application_class = G_APPLICATION_CLASS (class);
++  GObjectClass *object_class = G_OBJECT_CLASS (class);
++
++  application_class->startup = plug_man_startup;
++  application_class->activate = plug_man_activate;
++  application_class->open = plug_man_open;
++
++  object_class->finalize = plug_man_finalize;
++
++}
++
++PlugMan *
++plug_man_new (void)
++{
++  return g_object_new (plug_man_get_type (),
++                       "application-id", "org.gtk.Test.plugman",
++                       "flags", G_APPLICATION_HANDLES_OPEN,
++                       NULL);
++}
++
++int
++main (int argc, char **argv)
++{
++  PlugMan *plug_man;
++  int status;
++
++  plug_man = plug_man_new ();
++  gtk_application_add_accelerator (GTK_APPLICATION (plug_man),
++                                   "F11", "win.fullscreen", NULL);
++  status = g_application_run (G_APPLICATION (plug_man), argc, argv);
++  g_object_unref (plug_man);
++
++  return status;
++}
+Index: gtk+3.0-3.14.13/gtk/Makefile.am
+===================================================================
+--- gtk+3.0-3.14.13.orig/gtk/Makefile.am
++++ gtk+3.0-3.14.13/gtk/Makefile.am
+@@ -129,6 +129,9 @@ deps = \
+ 	$(top_builddir)/gdk/libgdk-3.la	\
+ 	$(top_builddir)/gtk/inspector/libgtkinspector.la
+ 
++AM_CFLAGS = -I/usr/include/zeitgeist-1.0 -I/usr/include/glib-2.0
++libadd += -lzeitgeist-1.0 -lgobject-2.0 -lglib-2.0
++
+ # libtool stuff: set version and export symbols for resolving
+ # since automake doesn't support conditionalized libsomething_la_LDFLAGS
+ # we use the general approach here
+Index: gtk+3.0-3.14.13/gtk/gtkfilechooser.c
+===================================================================
+--- gtk+3.0-3.14.13.orig/gtk/gtkfilechooser.c
++++ gtk+3.0-3.14.13/gtk/gtkfilechooser.c
+@@ -25,6 +25,22 @@
+ #include "gtkmarshalers.h"
+ 
+ 
++#ifdef GDK_WINDOWING_X11
++#include <gdk/gdkx.h>
++#endif
++
++#include <zeitgeist.h>
++#include "gtkfilechooserdialog.h"
++#include "gtkfilechooserbutton.h"
++
++#define ZG_INTERPRETATION_FILE_ACCESS           "activity://gui-toolkit/gtk3/FileChooser/FileAccess"
++#define ZG_INTERPRETATION_FILE_CREATE           "activity://gui-toolkit/gtk3/FileChooser/FileCreate"
++#define ZG_INTERPRETATION_FILE_MODIFY           "activity://gui-toolkit/gtk3/FileChooser/FileModify"
++#define ZG_INTERPRETATION_FILE_GTK_BTN_SET      "activity://gui-toolkit/gtk3/FileChooserButton/FileSet"
++#define ZG_INTERPRETATION_FILE_GTK_BTN          "activity://gui-toolkit/gtk3/FileChooserButton"
++#define ZG_INTERPRETATION_FILE_GTK_DLG          "activity://gui-toolkit/gtk3/FileChooserDialog"
++#define ZG_INTERPRETATION_FILE_GTK_WDG          "activity://gui-toolkit/gtk3/FileChooserGenericWidget"
++
+ /**
+  * SECTION:gtkfilechooser
+  * @Short_description: File chooser interface used by GtkFileChooserWidget and GtkFileChooserDialog
+@@ -870,7 +886,7 @@ gtk_file_chooser_get_filenames (GtkFileC
+   
+   g_return_val_if_fail (GTK_IS_FILE_CHOOSER (chooser), NULL);
+ 
+-  files = gtk_file_chooser_get_files (chooser);
++  files = _gtk_file_chooser_get_files (chooser, FALSE);
+ 
+   result = files_to_strings (files, g_file_get_path);
+   g_slist_foreach (files, (GFunc) g_object_unref, NULL);
+@@ -1211,7 +1227,7 @@ gtk_file_chooser_get_uris (GtkFileChoose
+   
+   g_return_val_if_fail (GTK_IS_FILE_CHOOSER (chooser), NULL);
+ 
+-  files = gtk_file_chooser_get_files (chooser);
++  files = _gtk_file_chooser_get_files (chooser, FALSE);
+ 
+   if (gtk_file_chooser_get_local_only (chooser))
+     result = files_to_strings (files, file_to_uri_with_native_path);
+@@ -1389,6 +1405,267 @@ gtk_file_chooser_unselect_file (GtkFileC
+   GTK_FILE_CHOOSER_GET_IFACE (chooser)->unselect_file (chooser, file);
+ }
+ 
++void
++_gtk_file_chooser_log_event_finish (_ZeitgeistFileDialogData *data, gchar *window_id)
++{
++  // Get access to Zeitgeist logger daemon
++  ZeitgeistLog *log = zeitgeist_log_get_default ();
++
++  // Overriding, this is called by my own callback to file-set to differentiate buttons
++  if (GTK_IS_FILE_CHOOSER_BUTTON (data->chooser) && data->internal_report_type) {
++    data->interpretation = ZG_INTERPRETATION_FILE_GTK_BTN_SET;
++  }
++
++  // Create the event to be added, with the known information
++  ZeitgeistEvent *event = zeitgeist_event_new_full (
++    data->interpretation,
++    ZEITGEIST_ZG_USER_ACTIVITY,
++    data->actor_name,
++    NULL);
++  g_free (data->actor_name);
++
++  // Loop through files to insert subjects into the event
++  GSList *iterator = NULL;
++  for (iterator=data->fileinfos; iterator; iterator=iterator->next) {
++    _ZeitgeistFileDialogFileData *fdata = iterator->data;
++
++    // Add the subject now that all information has been calculated
++    zeitgeist_event_add_subject (event, zeitgeist_subject_new_full (fdata->uri,
++                                      NULL,
++                                      NULL,
++                                      fdata->mime_type,
++                                      fdata->origin,
++                                      fdata->display_name,
++                                      NULL));
++
++    g_free (fdata->display_name);
++    g_free (fdata->origin);
++    g_free (fdata->mime_type);
++    g_free (fdata->uri);
++    g_free (fdata);
++  }
++
++  if (!window_id)
++    window_id = g_strdup ("n/a");
++
++  // Add metadata about the widget
++  gchar *widget_uri = NULL;
++  if (GTK_IS_FILE_CHOOSER_BUTTON (data->chooser))
++    widget_uri = ZG_INTERPRETATION_FILE_GTK_BTN;
++  else if (GTK_IS_FILE_CHOOSER_DIALOG (data->chooser))
++    widget_uri = ZG_INTERPRETATION_FILE_GTK_DLG;
++  else
++    widget_uri = ZG_INTERPRETATION_FILE_GTK_WDG;
++
++  gchar *widget_display = g_strdup_printf ("Widget type: %s", widget_uri);
++  ZeitgeistSubject *subject = zeitgeist_subject_new_full (widget_uri,
++    ZEITGEIST_NFO_SOFTWARE,
++    ZEITGEIST_ZG_HEURISTIC_ACTIVITY,
++    "application/octet-stream",
++    NULL,
++    widget_display,
++    NULL);
++  zeitgeist_event_add_subject (event, subject);
++  g_free (widget_display);
++
++  // Add the UCL metadata
++  char *study_uri = g_strdup_printf ("activity://null///pid://%d///winid://%s///", getpid(), window_id);
++  subject = zeitgeist_subject_new_full (study_uri,
++    ZEITGEIST_NFO_SOFTWARE,
++    ZEITGEIST_ZG_WORLD_ACTIVITY,
++    "application/octet-stream",
++    NULL,
++    "ucl-study-metadata",
++    NULL);
++  zeitgeist_event_add_subject (event, subject);
++  g_free (window_id);
++  g_free (study_uri);
++
++  // Send the event
++  zeitgeist_log_insert_events_no_reply (log, event, NULL);
++
++  g_slist_free (data->fileinfos); // content freed in loop above
++  g_slist_free (data->files); // content freed by g_object_unref (file) in the callback
++  g_free (data);
++}
++
++static void
++_log_zeitgeist_event_add_file (_ZeitgeistFileDialogData *data);
++
++static void
++_log_zeitgeist_event_add_file_cb (GObject *source_object,
++                                  GAsyncResult *res,
++                                  gpointer user_data)
++{
++  _ZeitgeistFileDialogData *data = user_data;
++
++  // Add the file info to our list
++  _ZeitgeistFileDialogFileData *fdata = g_malloc (sizeof (_ZeitgeistFileDialogFileData));
++  GFile *file = data->current_file; // second transfer of ownership
++  fdata->uri = g_file_get_uri (file);
++  fdata->origin = g_path_get_dirname (fdata->uri);
++  GFileInfo *info = g_file_query_info_finish (file, res, NULL);
++
++  // Info was found!
++  if (info) {
++    fdata->display_name = g_strdup (g_file_info_get_display_name (info));
++    #ifdef __ZEITGEIST_FAST__
++    fdata->mime_type = g_content_type_get_mime_type (g_file_info_get_attribute_string (info, G_FILE_ATTRIBUTE_STANDARD_FAST_CONTENT_TYPE));
++    #else
++    fdata->mime_type = g_content_type_get_mime_type (g_file_info_get_content_type (info));
++    #endif
++  } else {
++    fdata->display_name = g_path_get_basename (fdata->uri);
++    fdata->mime_type = g_content_type_guess (fdata->uri, NULL, 0, NULL);
++  }
++
++  // Last-resort solutions for display name and mime type
++  if (!fdata->display_name)
++    fdata->display_name = g_strdup (fdata->uri);
++  if (!fdata->mime_type)
++    fdata->mime_type = g_strdup ("application/octet-stream");
++  data->fileinfos = g_slist_append (data->fileinfos, fdata);
++
++  // Next file...
++  g_object_unref (file);
++  data->current_file = NULL;
++  _log_zeitgeist_event_add_file (data);
++}
++
++static void
++_log_zeitgeist_event_add_file (_ZeitgeistFileDialogData *data)
++{
++  // Still some files to process
++  if (data->files) {
++    GFile *file = data->files->data;
++    data->files = g_slist_remove (data->files, file);
++    data->current_file = file; // first transfer of ownership
++
++    g_file_query_info_async (file,
++        G_FILE_ATTRIBUTE_STANDARD_DISPLAY_NAME ","
++        G_FILE_ATTRIBUTE_STANDARD_CONTENT_TYPE,
++        G_FILE_QUERY_INFO_NONE,
++        G_PRIORITY_DEFAULT,
++        NULL,
++        _log_zeitgeist_event_add_file_cb, data);
++  } else {
++    // Calculate the window id
++    char *window_id = NULL;
++
++    #ifdef GDK_WINDOWING_X11
++    if (GTK_IS_FILE_CHOOSER_DIALOG (data->chooser)) {
++      GtkFileChooserDialog *dlg = GTK_FILE_CHOOSER_DIALOG (data->chooser);
++
++      if (dlg->priv->parent_xid)
++        window_id = g_strdup_printf ("%lu", dlg->priv->parent_xid);
++    } else {
++      GdkWindow *gwin = gtk_widget_get_parent_window (GTK_WIDGET (data->chooser));
++      if (!gwin)
++        gwin = gtk_widget_get_window (GTK_WIDGET (data->chooser));
++
++      GdkDisplay *dsp = NULL;
++      if (gwin)
++        dsp = gdk_window_get_display (gwin);
++
++      if (dsp && GDK_IS_X11_DISPLAY (dsp)) {
++        Window xid = (Window) gdk_x11_window_get_xid (gwin);
++        window_id = g_strdup_printf ("%lu", xid);
++      }
++    }
++    #endif
++
++    _gtk_file_chooser_log_event_finish (data, window_id);
++
++    // Throw the reference away, else we'll never be able to finalise chooser
++    g_object_unref (data->chooser);
++    data->chooser = NULL;
++  }
++}
++
++void
++_gtk_file_chooser_log_zeitgeist_event (GtkFileChooser *chooser,
++                                       GSList         *files,
++                                       gboolean        internal_report_type)
++{
++  g_return_if_fail (GTK_IS_FILE_CHOOSER (chooser));
++  if (!files)
++    return;
++
++  GtkFileChooserAction gtk_action     = gtk_file_chooser_get_action (chooser);
++  _ZeitgeistFileDialogData *data      = NULL;
++
++  // Get access to Zeitgeist logger daemon
++  ZeitgeistLog *log = g_object_new (ZEITGEIST_TYPE_LOG, NULL);
++  g_return_if_fail (log != NULL);
++
++  data = g_malloc (sizeof (_ZeitgeistFileDialogData));
++
++  data->internal_report_type = internal_report_type;
++
++  // Make up a plausible actor name from the name of the program
++  data->actor_name = g_strdup_printf ("application://%s.desktop", g_get_prgname ());
++  if(data->actor_name == NULL)
++    data->actor_name = g_strdup ("application://unknown.desktop");
++
++  // If the chooser has a create/modify type and the file (guaranteed unique
++  // by the API) already exists, change the interpretation of the event to
++  // ZEITGEIST_ZG_MODIFY_EVENT, else set it to ZEITGEIST_ZG_CREATE_EVENT.
++  // Note that this does not always mean a file will be modified or created as
++  // the write operation may fail for a host of reasons but it suffices to
++  // translate intent until UDAC-style file handles can report on actual writes.
++  if (gtk_action == GTK_FILE_CHOOSER_ACTION_SAVE || gtk_action == GTK_FILE_CHOOSER_ACTION_CREATE_FOLDER)
++  {
++    if (g_file_test (g_file_get_path (files->data), G_FILE_TEST_EXISTS))
++      data->interpretation = ZG_INTERPRETATION_FILE_MODIFY;
++    else
++      data->interpretation = ZG_INTERPRETATION_FILE_CREATE;
++  }
++  else //if (gtk_action == GTK_FILE_CHOOSER_ACTION_OPEN || gtk_action == GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER)
++  {
++    data->interpretation = ZG_INTERPRETATION_FILE_ACCESS;
++  }
++
++  g_object_ref (chooser);
++  data->chooser = chooser;
++
++  data->current_file = NULL;
++  data->files = g_slist_copy_deep (files, (GCopyFunc) g_object_ref, NULL);
++  data->fileinfos = NULL;
++
++  _log_zeitgeist_event_add_file (data);
++}
++
++/**
++ * _gtk_file_chooser_get_files:
++ * @chooser: a #GtkFileChooser
++ * @internal: origin of the call (from within the #GtkFileChooser internals
++ * or from client code?). Should be true if the function is being called for
++ * another purpose than actually serving files to a client of a child widget.
++ *
++ * Lists all the selected files and subfolders in the current folder of @chooser
++ * as #GFile. An internal function, see gtk_file_chooser_get_uris().
++ *
++ * Return value: (element-type GFile) (transfer full): a #GSList
++ *   containing a #GFile for each selected file and subfolder in the
++ *   current folder.  Free the returned list with g_slist_free(), and
++ *   the files with g_object_unref().
++ *
++ * Since: 2.14
++ **/
++GSList *
++_gtk_file_chooser_get_files (GtkFileChooser *chooser, const gboolean internal)
++{
++  g_return_val_if_fail (GTK_IS_FILE_CHOOSER (chooser), NULL);
++
++  GSList *files = GTK_FILE_CHOOSER_GET_IFACE (chooser)->get_files (chooser);
++
++  if (!internal) {
++    _gtk_file_chooser_log_zeitgeist_event (chooser, files, FALSE);
++  }
++
++  return files;
++}
++
+ /**
+  * gtk_file_chooser_get_files:
+  * @chooser: a #GtkFileChooser
+@@ -1406,9 +1683,7 @@ gtk_file_chooser_unselect_file (GtkFileC
+ GSList *
+ gtk_file_chooser_get_files (GtkFileChooser *chooser)
+ {
+-  g_return_val_if_fail (GTK_IS_FILE_CHOOSER (chooser), NULL);
+-
+-  return GTK_FILE_CHOOSER_GET_IFACE (chooser)->get_files (chooser);
++  return _gtk_file_chooser_get_files(chooser, FALSE);
+ }
+ 
+ /**
+@@ -1492,7 +1767,7 @@ gtk_file_chooser_get_file (GtkFileChoose
+   
+   g_return_val_if_fail (GTK_IS_FILE_CHOOSER (chooser), NULL);
+ 
+-  list = gtk_file_chooser_get_files (chooser);
++  list = _gtk_file_chooser_get_files (chooser, FALSE);
+   if (list)
+     {
+       result = list->data;
+Index: gtk+3.0-3.14.13/gtk/gtkfilechooserbutton.c
+===================================================================
+--- gtk+3.0-3.14.13.orig/gtk/gtkfilechooserbutton.c
++++ gtk+3.0-3.14.13/gtk/gtkfilechooserbutton.c
+@@ -56,6 +56,9 @@
+ #include "gtkprivate.h"
+ #include "gtksettings.h"
+ 
++#define ZG_INTERPRETATION_FILE_GTK_BTN_ACCESS   "activity://gui-toolkit/gtk3/FileAccessBtn"
++#define ZG_INTERPRETATION_FILE_GTK_BTN_CREATE   "activity://gui-toolkit/gtk3/FileCreateBtn"
++#define ZG_INTERPRETATION_FILE_GTK_BTN_MODIFY   "activity://gui-toolkit/gtk3/FileModifyBtn"
+ 
+ /**
+  * SECTION:gtkfilechooserbutton
+@@ -342,6 +345,9 @@ static void     dialog_response_cb
+ 						  gint            response,
+ 						  gpointer        user_data);
+ 
++static void     file_set_cb                      (GtkFileChooserButton *button,
++                                                  gpointer              user_data);
++
+ static guint file_chooser_button_signals[LAST_SIGNAL] = { 0 };
+ 
+ /* ******************* *
+@@ -510,6 +516,8 @@ gtk_file_chooser_button_init (GtkFileCho
+   gtk_target_list_add_text_targets (target_list, TEXT_PLAIN);
+   gtk_drag_dest_set_target_list (GTK_WIDGET (button), target_list);
+   gtk_target_list_unref (target_list);
++
++  g_signal_connect (button, "file-set", G_CALLBACK (file_set_cb), NULL);
+ }
+ 
+ 
+@@ -1001,6 +1009,17 @@ gtk_file_chooser_button_get_property (GO
+ }
+ 
+ static void
++file_set_cb (GtkFileChooserButton *button,
++             gpointer              user_data G_GNUC_UNUSED)
++{
++  GtkFileChooser *chooser = GTK_FILE_CHOOSER (button);
++  _gtk_file_chooser_log_zeitgeist_event (chooser,
++                                         _gtk_file_chooser_get_files (chooser,
++                                                                      TRUE),
++                                         TRUE);
++}
++
++static void
+ gtk_file_chooser_button_finalize (GObject *object)
+ {
+   GtkFileChooserButton *button = GTK_FILE_CHOOSER_BUTTON (object);
+Index: gtk+3.0-3.14.13/gtk/gtkfilechooserdialog.c
+===================================================================
+--- gtk+3.0-3.14.13.orig/gtk/gtkfilechooserdialog.c
++++ gtk+3.0-3.14.13/gtk/gtkfilechooserdialog.c
+@@ -34,6 +34,9 @@
+ 
+ #include <stdarg.h>
+ 
++#ifdef GDK_WINDOWING_X11
++#include <gdk/gdkx.h>
++#endif
+ 
+ /**
+  * SECTION:gtkfilechooserdialog
+@@ -194,14 +197,6 @@
+  */
+ 
+ 
+-struct _GtkFileChooserDialogPrivate
+-{
+-  GtkWidget *widget;
+-
+-  /* for use with GtkFileChooserEmbed */
+-  gboolean response_requested;
+-};
+-
+ static void     gtk_file_chooser_dialog_set_property (GObject               *object,
+ 						      guint                  prop_id,
+ 						      const GValue          *value,
+@@ -398,19 +393,19 @@ file_chooser_widget_selection_changed (G
+                                        GtkFileChooserDialog *dialog)
+ {
+   GtkWidget *button;
+-  GSList *uris;
++  GSList *files;
+   gboolean sensitive;
+ 
+   button = get_accept_action_widget (GTK_DIALOG (dialog), FALSE);
+   if (button == NULL)
+     return;
+ 
+-  uris = gtk_file_chooser_get_uris (GTK_FILE_CHOOSER (dialog->priv->widget));
+-  sensitive = (uris != NULL);
++  files = _gtk_file_chooser_get_files (GTK_FILE_CHOOSER (dialog->priv->widget), TRUE);
++  sensitive = (files != NULL);
+   gtk_widget_set_sensitive (button, sensitive);
+ 
+-  if (uris)
+-    g_slist_free_full (uris, g_free);
++  if (files)
++    g_slist_free_full (files, g_object_unref);
+ }
+ 
+ static void
+@@ -562,9 +557,23 @@ gtk_file_chooser_dialog_new_valist (cons
+ 			 "action", action,
+ 			 NULL);
+ 
+-  if (parent)
++  GtkFileChooserDialogPrivate *priv = GTK_FILE_CHOOSER_DIALOG (result)->priv;
++  priv->parent_xid = 0;
++
++  if (parent) {
+     gtk_window_set_transient_for (GTK_WINDOW (result), parent);
+ 
++    #ifdef GDK_WINDOWING_X11
++    GdkWindow *gwin = gtk_widget_get_window (GTK_WIDGET (parent));
++    GdkDisplay *dsp = NULL;
++      if (gwin)
++        dsp = gdk_window_get_display (gwin);
++
++      if (dsp && GDK_IS_X11_DISPLAY (dsp))
++        priv->parent_xid = (Window) gdk_x11_window_get_xid (gwin);
++    #endif
++  }
++
+   while (button_text)
+     {
+       response_id = va_arg (varargs, gint);
+Index: gtk+3.0-3.14.13/gtk/gtkfilechooserprivate.h
+===================================================================
+--- gtk+3.0-3.14.13.orig/gtk/gtkfilechooserprivate.h
++++ gtk+3.0-3.14.13/gtk/gtkfilechooserprivate.h
+@@ -33,6 +33,10 @@
+ #include "gtktreeview.h"
+ #include "gtkbox.h"
+ 
++#ifdef GDK_WINDOWING_X11
++#include <gdk/gdkx.h>
++#endif
++
+ G_BEGIN_DECLS
+ 
+ #define SETTINGS_KEY_LOCATION_MODE       "location-mode"
+@@ -48,6 +52,35 @@ G_BEGIN_DECLS
+ 
+ #define GTK_FILE_CHOOSER_GET_IFACE(inst)  (G_TYPE_INSTANCE_GET_INTERFACE ((inst), GTK_TYPE_FILE_CHOOSER, GtkFileChooserIface))
+ 
++typedef struct __ZeitgeistFileDialogData {
++	gchar          *actor_name;
++	GFile          *current_file;
++	const gchar    *interpretation;
++	GSList         *files;
++	GSList         *fileinfos;
++	GtkFileChooser *chooser;
++	gboolean        internal_report_type;
++} _ZeitgeistFileDialogData;
++
++typedef struct __ZeitgeistFileDialogFileData {
++	gchar *uri;
++	gchar *display_name;
++	gchar *origin;
++	gchar *mime_type;
++} _ZeitgeistFileDialogFileData;
++
++struct _GtkFileChooserDialogPrivate
++{
++  GtkWidget *widget;
++
++  /* for use with GtkFileChooserEmbed */
++  gboolean response_requested;
++
++  #ifdef GDK_WINDOWING_X11
++  Window parent_xid;
++  #endif
++};
++
+ typedef struct _GtkFileChooserIface GtkFileChooserIface;
+ 
+ struct _GtkFileChooserIface
+@@ -95,6 +128,8 @@ struct _GtkFileChooserIface
+   GtkFileChooserConfirmation (*confirm_overwrite) (GtkFileChooser *chooser);
+ };
+ 
++GSList        *_gtk_file_chooser_get_files               (GtkFileChooser    *chooser,
++                                                          const gboolean     internal);
+ GtkFileSystem *_gtk_file_chooser_get_file_system         (GtkFileChooser    *chooser);
+ gboolean       _gtk_file_chooser_add_shortcut_folder     (GtkFileChooser    *chooser,
+ 							  GFile             *folder,
+@@ -104,6 +139,9 @@ gboolean       _gtk_file_chooser_remove_
+ 							  GError           **error);
+ GSList *       _gtk_file_chooser_list_shortcut_folder_files (GtkFileChooser *chooser);
+ 
++void           _gtk_file_chooser_log_zeitgeist_event     (GtkFileChooser *chooser,
++                                                          GSList         *files,
++                                                          gboolean        internal_report_type);
+ 
+ G_END_DECLS
+ 
+Index: gtk+3.0-3.14.13/gtk/gtkfilechooserutils.c
+===================================================================
+--- gtk+3.0-3.14.13.orig/gtk/gtkfilechooserutils.c
++++ gtk+3.0-3.14.13/gtk/gtkfilechooserutils.c
+@@ -232,7 +232,9 @@ delegate_unselect_all (GtkFileChooser *c
+ static GSList *
+ delegate_get_files (GtkFileChooser *chooser)
+ {
+-  return gtk_file_chooser_get_files (get_delegate (chooser));
++  // From experimenting with API, it seems this call is generated twice when
++  // a child of GtkFileChooser attempts to be served files.
++  return _gtk_file_chooser_get_files (get_delegate (chooser), TRUE);
+ }
+ 
+ static GFile *

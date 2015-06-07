@@ -28,7 +28,8 @@ noinst_PROGRAMS = \
 	grid-packing				\
 	drawing					\
 	builder					\
-	search-bar
+	search-bar				\
+	filedialog
 
 EXTRA_DIST = builder.ui
 

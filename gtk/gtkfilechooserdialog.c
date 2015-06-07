@@ -34,6 +34,9 @@
 
 #include <stdarg.h>
 
+#ifdef GDK_WINDOWING_X11
+#include <gdk/gdkx.h>
+#endif
 
 /**
  * SECTION:gtkfilechooserdialog
@@ -193,14 +196,6 @@
  * when you use #GtkFileChooserDialog to ensure proper operation.
  */
 
-
-struct _GtkFileChooserDialogPrivate
-{
-  GtkWidget *widget;
-
-  /* for use with GtkFileChooserEmbed */
-  gboolean response_requested;
-};
 
 static void     gtk_file_chooser_dialog_set_property (GObject               *object,
 						      guint                  prop_id,
@@ -398,19 +393,19 @@ file_chooser_widget_selection_changed (GtkWidget            *widget,
                                        GtkFileChooserDialog *dialog)
 {
   GtkWidget *button;
-  GSList *uris;
+  GSList *files;
   gboolean sensitive;
 
   button = get_accept_action_widget (GTK_DIALOG (dialog), FALSE);
   if (button == NULL)
     return;
 
-  uris = gtk_file_chooser_get_uris (GTK_FILE_CHOOSER (dialog->priv->widget));
-  sensitive = (uris != NULL);
+  files = _gtk_file_chooser_get_files (GTK_FILE_CHOOSER (dialog->priv->widget), TRUE);
+  sensitive = (files != NULL);
   gtk_widget_set_sensitive (button, sensitive);
 
-  if (uris)
-    g_slist_free_full (uris, g_free);
+  if (files)
+    g_slist_free_full (files, g_object_unref);
 }
 
 static void
@@ -562,8 +557,22 @@ gtk_file_chooser_dialog_new_valist (const gchar          *title,
 			 "action", action,
 			 NULL);
 
-  if (parent)
+  GtkFileChooserDialogPrivate *priv = GTK_FILE_CHOOSER_DIALOG (result)->priv;
+  priv->parent_xid = 0;
+
+  if (parent) {
     gtk_window_set_transient_for (GTK_WINDOW (result), parent);
+
+    #ifdef GDK_WINDOWING_X11
+    GdkWindow *gwin = gtk_widget_get_window (GTK_WIDGET (parent));
+    GdkDisplay *dsp = NULL;
+      if (gwin)
+        dsp = gdk_window_get_display (gwin);
+
+      if (dsp && GDK_IS_X11_DISPLAY (dsp))
+        priv->parent_xid = (Window) gdk_x11_window_get_xid (gwin);
+    #endif
+  }
 
   while (button_text)
     {

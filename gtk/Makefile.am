@@ -129,6 +129,9 @@ deps = \
 	$(top_builddir)/gdk/libgdk-3.la	\
 	$(top_builddir)/gtk/inspector/libgtkinspector.la
 
+AM_CFLAGS = -I/usr/include/zeitgeist-1.0 -I/usr/include/glib-2.0
+libadd += -lzeitgeist-1.0 -lgobject-2.0 -lglib-2.0
+
 # libtool stuff: set version and export symbols for resolving
 # since automake doesn't support conditionalized libsomething_la_LDFLAGS
 # we use the general approach here

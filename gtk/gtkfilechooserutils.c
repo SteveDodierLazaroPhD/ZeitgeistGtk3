@@ -232,7 +232,9 @@ delegate_unselect_all (GtkFileChooser *chooser)
 static GSList *
 delegate_get_files (GtkFileChooser *chooser)
 {
-  return gtk_file_chooser_get_files (get_delegate (chooser));
+  // From experimenting with API, it seems this call is generated twice when
+  // a child of GtkFileChooser attempts to be served files.
+  return _gtk_file_chooser_get_files (get_delegate (chooser), TRUE);
 }
 
 static GFile *

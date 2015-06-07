@@ -25,6 +25,22 @@
 #include "gtkmarshalers.h"
 
 
+#ifdef GDK_WINDOWING_X11
+#include <gdk/gdkx.h>
+#endif
+
+#include <zeitgeist.h>
+#include "gtkfilechooserdialog.h"
+#include "gtkfilechooserbutton.h"
+
+#define ZG_INTERPRETATION_FILE_ACCESS           "activity://gui-toolkit/gtk3/FileChooser/FileAccess"
+#define ZG_INTERPRETATION_FILE_CREATE           "activity://gui-toolkit/gtk3/FileChooser/FileCreate"
+#define ZG_INTERPRETATION_FILE_MODIFY           "activity://gui-toolkit/gtk3/FileChooser/FileModify"
+#define ZG_INTERPRETATION_FILE_GTK_BTN_SET      "activity://gui-toolkit/gtk3/FileChooserButton/FileSet"
+#define ZG_INTERPRETATION_FILE_GTK_BTN          "activity://gui-toolkit/gtk3/FileChooserButton"
+#define ZG_INTERPRETATION_FILE_GTK_DLG          "activity://gui-toolkit/gtk3/FileChooserDialog"
+#define ZG_INTERPRETATION_FILE_GTK_WDG          "activity://gui-toolkit/gtk3/FileChooserGenericWidget"
+
 /**
  * SECTION:gtkfilechooser
  * @Short_description: File chooser interface used by GtkFileChooserWidget and GtkFileChooserDialog
@@ -870,7 +886,7 @@ gtk_file_chooser_get_filenames (GtkFileChooser *chooser)
   
   g_return_val_if_fail (GTK_IS_FILE_CHOOSER (chooser), NULL);
 
-  files = gtk_file_chooser_get_files (chooser);
+  files = _gtk_file_chooser_get_files (chooser, FALSE);
 
   result = files_to_strings (files, g_file_get_path);
   g_slist_foreach (files, (GFunc) g_object_unref, NULL);
@@ -1211,7 +1227,7 @@ gtk_file_chooser_get_uris (GtkFileChooser *chooser)
   
   g_return_val_if_fail (GTK_IS_FILE_CHOOSER (chooser), NULL);
 
-  files = gtk_file_chooser_get_files (chooser);
+  files = _gtk_file_chooser_get_files (chooser, FALSE);
 
   if (gtk_file_chooser_get_local_only (chooser))
     result = files_to_strings (files, file_to_uri_with_native_path);
@@ -1389,6 +1405,267 @@ gtk_file_chooser_unselect_file (GtkFileChooser *chooser,
   GTK_FILE_CHOOSER_GET_IFACE (chooser)->unselect_file (chooser, file);
 }
 
+void
+_gtk_file_chooser_log_event_finish (_ZeitgeistFileDialogData *data, gchar *window_id)
+{
+  // Get access to Zeitgeist logger daemon
+  ZeitgeistLog *log = zeitgeist_log_get_default ();
+
+  // Overriding, this is called by my own callback to file-set to differentiate buttons
+  if (GTK_IS_FILE_CHOOSER_BUTTON (data->chooser) && data->internal_report_type) {
+    data->interpretation = ZG_INTERPRETATION_FILE_GTK_BTN_SET;
+  }
+
+  // Create the event to be added, with the known information
+  ZeitgeistEvent *event = zeitgeist_event_new_full (
+    data->interpretation,
+    ZEITGEIST_ZG_USER_ACTIVITY,
+    data->actor_name,
+    NULL);
+  g_free (data->actor_name);
+
+  // Loop through files to insert subjects into the event
+  GSList *iterator = NULL;
+  for (iterator=data->fileinfos; iterator; iterator=iterator->next) {
+    _ZeitgeistFileDialogFileData *fdata = iterator->data;
+
+    // Add the subject now that all information has been calculated
+    zeitgeist_event_add_subject (event, zeitgeist_subject_new_full (fdata->uri,
+                                      NULL,
+                                      NULL,
+                                      fdata->mime_type,
+                                      fdata->origin,
+                                      fdata->display_name,
+                                      NULL));
+
+    g_free (fdata->display_name);
+    g_free (fdata->origin);
+    g_free (fdata->mime_type);
+    g_free (fdata->uri);
+    g_free (fdata);
+  }
+
+  if (!window_id)
+    window_id = g_strdup ("n/a");
+
+  // Add metadata about the widget
+  gchar *widget_uri = NULL;
+  if (GTK_IS_FILE_CHOOSER_BUTTON (data->chooser))
+    widget_uri = ZG_INTERPRETATION_FILE_GTK_BTN;
+  else if (GTK_IS_FILE_CHOOSER_DIALOG (data->chooser))
+    widget_uri = ZG_INTERPRETATION_FILE_GTK_DLG;
+  else
+    widget_uri = ZG_INTERPRETATION_FILE_GTK_WDG;
+
+  gchar *widget_display = g_strdup_printf ("Widget type: %s", widget_uri);
+  ZeitgeistSubject *subject = zeitgeist_subject_new_full (widget_uri,
+    ZEITGEIST_NFO_SOFTWARE,
+    ZEITGEIST_ZG_HEURISTIC_ACTIVITY,
+    "application/octet-stream",
+    NULL,
+    widget_display,
+    NULL);
+  zeitgeist_event_add_subject (event, subject);
+  g_free (widget_display);
+
+  // Add the UCL metadata
+  char *study_uri = g_strdup_printf ("activity://null///pid://%d///winid://%s///", getpid(), window_id);
+  subject = zeitgeist_subject_new_full (study_uri,
+    ZEITGEIST_NFO_SOFTWARE,
+    ZEITGEIST_ZG_WORLD_ACTIVITY,
+    "application/octet-stream",
+    NULL,
+    "ucl-study-metadata",
+    NULL);
+  zeitgeist_event_add_subject (event, subject);
+  g_free (window_id);
+  g_free (study_uri);
+
+  // Send the event
+  zeitgeist_log_insert_events_no_reply (log, event, NULL);
+
+  g_slist_free (data->fileinfos); // content freed in loop above
+  g_slist_free (data->files); // content freed by g_object_unref (file) in the callback
+  g_free (data);
+}
+
+static void
+_log_zeitgeist_event_add_file (_ZeitgeistFileDialogData *data);
+
+static void
+_log_zeitgeist_event_add_file_cb (GObject *source_object,
+                                  GAsyncResult *res,
+                                  gpointer user_data)
+{
+  _ZeitgeistFileDialogData *data = user_data;
+
+  // Add the file info to our list
+  _ZeitgeistFileDialogFileData *fdata = g_malloc (sizeof (_ZeitgeistFileDialogFileData));
+  GFile *file = data->current_file; // second transfer of ownership
+  fdata->uri = g_file_get_uri (file);
+  fdata->origin = g_path_get_dirname (fdata->uri);
+  GFileInfo *info = g_file_query_info_finish (file, res, NULL);
+
+  // Info was found!
+  if (info) {
+    fdata->display_name = g_strdup (g_file_info_get_display_name (info));
+    #ifdef __ZEITGEIST_FAST__
+    fdata->mime_type = g_content_type_get_mime_type (g_file_info_get_attribute_string (info, G_FILE_ATTRIBUTE_STANDARD_FAST_CONTENT_TYPE));
+    #else
+    fdata->mime_type = g_content_type_get_mime_type (g_file_info_get_content_type (info));
+    #endif
+  } else {
+    fdata->display_name = g_path_get_basename (fdata->uri);
+    fdata->mime_type = g_content_type_guess (fdata->uri, NULL, 0, NULL);
+  }
+
+  // Last-resort solutions for display name and mime type
+  if (!fdata->display_name)
+    fdata->display_name = g_strdup (fdata->uri);
+  if (!fdata->mime_type)
+    fdata->mime_type = g_strdup ("application/octet-stream");
+  data->fileinfos = g_slist_append (data->fileinfos, fdata);
+
+  // Next file...
+  g_object_unref (file);
+  data->current_file = NULL;
+  _log_zeitgeist_event_add_file (data);
+}
+
+static void
+_log_zeitgeist_event_add_file (_ZeitgeistFileDialogData *data)
+{
+  // Still some files to process
+  if (data->files) {
+    GFile *file = data->files->data;
+    data->files = g_slist_remove (data->files, file);
+    data->current_file = file; // first transfer of ownership
+
+    g_file_query_info_async (file,
+        G_FILE_ATTRIBUTE_STANDARD_DISPLAY_NAME ","
+        G_FILE_ATTRIBUTE_STANDARD_CONTENT_TYPE,
+        G_FILE_QUERY_INFO_NONE,
+        G_PRIORITY_DEFAULT,
+        NULL,
+        _log_zeitgeist_event_add_file_cb, data);
+  } else {
+    // Calculate the window id
+    char *window_id = NULL;
+
+    #ifdef GDK_WINDOWING_X11
+    if (GTK_IS_FILE_CHOOSER_DIALOG (data->chooser)) {
+      GtkFileChooserDialog *dlg = GTK_FILE_CHOOSER_DIALOG (data->chooser);
+
+      if (dlg->priv->parent_xid)
+        window_id = g_strdup_printf ("%lu", dlg->priv->parent_xid);
+    } else {
+      GdkWindow *gwin = gtk_widget_get_parent_window (GTK_WIDGET (data->chooser));
+      if (!gwin)
+        gwin = gtk_widget_get_window (GTK_WIDGET (data->chooser));
+
+      GdkDisplay *dsp = NULL;
+      if (gwin)
+        dsp = gdk_window_get_display (gwin);
+
+      if (dsp && GDK_IS_X11_DISPLAY (dsp)) {
+        Window xid = (Window) gdk_x11_window_get_xid (gwin);
+        window_id = g_strdup_printf ("%lu", xid);
+      }
+    }
+    #endif
+
+    _gtk_file_chooser_log_event_finish (data, window_id);
+
+    // Throw the reference away, else we'll never be able to finalise chooser
+    g_object_unref (data->chooser);
+    data->chooser = NULL;
+  }
+}
+
+void
+_gtk_file_chooser_log_zeitgeist_event (GtkFileChooser *chooser,
+                                       GSList         *files,
+                                       gboolean        internal_report_type)
+{
+  g_return_if_fail (GTK_IS_FILE_CHOOSER (chooser));
+  if (!files)
+    return;
+
+  GtkFileChooserAction gtk_action     = gtk_file_chooser_get_action (chooser);
+  _ZeitgeistFileDialogData *data      = NULL;
+
+  // Get access to Zeitgeist logger daemon
+  ZeitgeistLog *log = g_object_new (ZEITGEIST_TYPE_LOG, NULL);
+  g_return_if_fail (log != NULL);
+
+  data = g_malloc (sizeof (_ZeitgeistFileDialogData));
+
+  data->internal_report_type = internal_report_type;
+
+  // Make up a plausible actor name from the name of the program
+  data->actor_name = g_strdup_printf ("application://%s.desktop", g_get_prgname ());
+  if(data->actor_name == NULL)
+    data->actor_name = g_strdup ("application://unknown.desktop");
+
+  // If the chooser has a create/modify type and the file (guaranteed unique
+  // by the API) already exists, change the interpretation of the event to
+  // ZEITGEIST_ZG_MODIFY_EVENT, else set it to ZEITGEIST_ZG_CREATE_EVENT.
+  // Note that this does not always mean a file will be modified or created as
+  // the write operation may fail for a host of reasons but it suffices to
+  // translate intent until UDAC-style file handles can report on actual writes.
+  if (gtk_action == GTK_FILE_CHOOSER_ACTION_SAVE || gtk_action == GTK_FILE_CHOOSER_ACTION_CREATE_FOLDER)
+  {
+    if (g_file_test (g_file_get_path (files->data), G_FILE_TEST_EXISTS))
+      data->interpretation = ZG_INTERPRETATION_FILE_MODIFY;
+    else
+      data->interpretation = ZG_INTERPRETATION_FILE_CREATE;
+  }
+  else //if (gtk_action == GTK_FILE_CHOOSER_ACTION_OPEN || gtk_action == GTK_FILE_CHOOSER_ACTION_SELECT_FOLDER)
+  {
+    data->interpretation = ZG_INTERPRETATION_FILE_ACCESS;
+  }
+
+  g_object_ref (chooser);
+  data->chooser = chooser;
+
+  data->current_file = NULL;
+  data->files = g_slist_copy_deep (files, (GCopyFunc) g_object_ref, NULL);
+  data->fileinfos = NULL;
+
+  _log_zeitgeist_event_add_file (data);
+}
+
+/**
+ * _gtk_file_chooser_get_files:
+ * @chooser: a #GtkFileChooser
+ * @internal: origin of the call (from within the #GtkFileChooser internals
+ * or from client code?). Should be true if the function is being called for
+ * another purpose than actually serving files to a client of a child widget.
+ *
+ * Lists all the selected files and subfolders in the current folder of @chooser
+ * as #GFile. An internal function, see gtk_file_chooser_get_uris().
+ *
+ * Return value: (element-type GFile) (transfer full): a #GSList
+ *   containing a #GFile for each selected file and subfolder in the
+ *   current folder.  Free the returned list with g_slist_free(), and
+ *   the files with g_object_unref().
+ *
+ * Since: 2.14
+ **/
+GSList *
+_gtk_file_chooser_get_files (GtkFileChooser *chooser, const gboolean internal)
+{
+  g_return_val_if_fail (GTK_IS_FILE_CHOOSER (chooser), NULL);
+
+  GSList *files = GTK_FILE_CHOOSER_GET_IFACE (chooser)->get_files (chooser);
+
+  if (!internal) {
+    _gtk_file_chooser_log_zeitgeist_event (chooser, files, FALSE);
+  }
+
+  return files;
+}
+
 /**
  * gtk_file_chooser_get_files:
  * @chooser: a #GtkFileChooser
@@ -1406,9 +1683,7 @@ gtk_file_chooser_unselect_file (GtkFileChooser *chooser,
 GSList *
 gtk_file_chooser_get_files (GtkFileChooser *chooser)
 {
-  g_return_val_if_fail (GTK_IS_FILE_CHOOSER (chooser), NULL);
-
-  return GTK_FILE_CHOOSER_GET_IFACE (chooser)->get_files (chooser);
+  return _gtk_file_chooser_get_files(chooser, FALSE);
 }
 
 /**
@@ -1492,7 +1767,7 @@ gtk_file_chooser_get_file (GtkFileChooser *chooser)
   
   g_return_val_if_fail (GTK_IS_FILE_CHOOSER (chooser), NULL);
 
-  list = gtk_file_chooser_get_files (chooser);
+  list = _gtk_file_chooser_get_files (chooser, FALSE);
   if (list)
     {
       result = list->data;
