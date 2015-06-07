@@ -29,7 +29,8 @@ noinst_PROGRAMS = \
 	drawing					\
 	builder					\
 	search-bar				\
-	filedialog
+	filedialog				\
+	recentdialog
 
 EXTRA_DIST = builder.ui
 

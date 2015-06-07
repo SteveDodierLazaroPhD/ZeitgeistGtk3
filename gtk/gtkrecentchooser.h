@@ -125,6 +125,8 @@ struct _GtkRecentChooserIface
   /*< private >*/
   GTypeInterface base_iface;
 
+  gchar *           (* get_window_id)      (GtkRecentChooser  *chooser);
+
   /*< public >*/
 
   /*

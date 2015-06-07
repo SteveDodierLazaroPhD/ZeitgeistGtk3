@@ -92,6 +92,12 @@ G_DEFINE_TYPE_WITH_CODE (GtkRecentAction,
                          G_IMPLEMENT_INTERFACE (GTK_TYPE_RECENT_CHOOSER,
                                                 gtk_recent_chooser_iface_init));
 
+static gchar *
+gtk_recent_action_get_window_id (GtkRecentChooser *chooser)
+{
+  return NULL;
+}
+
 static gboolean
 gtk_recent_action_set_current_uri (GtkRecentChooser  *chooser,
                                    const gchar       *uri,
@@ -292,6 +298,7 @@ gtk_recent_action_list_filters (GtkRecentChooser *chooser)
 static void
 gtk_recent_chooser_iface_init (GtkRecentChooserIface *iface)
 {
+  iface->get_window_id = gtk_recent_action_get_window_id;
   iface->set_current_uri = gtk_recent_action_set_current_uri;
   iface->get_current_uri = gtk_recent_action_get_current_uri;
   iface->select_uri = gtk_recent_action_select_uri;

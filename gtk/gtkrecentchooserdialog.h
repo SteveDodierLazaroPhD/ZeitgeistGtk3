@@ -26,6 +26,10 @@
 #include <gtk/gtkdialog.h>
 #include <gtk/gtkrecentchooser.h>
 
+#ifdef GDK_WINDOWING_X11
+#include <gdk/gdkx.h>
+#endif
+
 G_BEGIN_DECLS
 
 #define GTK_TYPE_RECENT_CHOOSER_DIALOG		  (gtk_recent_chooser_dialog_get_type ())
@@ -40,6 +44,16 @@ typedef struct _GtkRecentChooserDialogClass   GtkRecentChooserDialogClass;
 
 typedef struct _GtkRecentChooserDialogPrivate GtkRecentChooserDialogPrivate;
 
+struct _GtkRecentChooserDialogPrivate
+{
+  GtkRecentManager *manager;
+
+  GtkWidget *chooser;
+
+#ifdef GDK_WINDOWING_X11
+  Window parent_xid;
+#endif
+};
 
 struct _GtkRecentChooserDialog
 {

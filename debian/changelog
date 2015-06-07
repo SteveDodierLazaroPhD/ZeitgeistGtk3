@@ -1,3 +1,9 @@
+gtk+3.0 (3.14.13-0ubuntu1ppa3) vivid; urgency=medium
+
+  * UCL Study: proper handling of recent files
+
+ -- Steve Dodier-Lazaro <sidnioulz@gmail.com>  Sun, 07 Jun 2015 18:52:16 +0100
+
 gtk+3.0 (3.14.13-0ubuntu1ppa2) vivid; urgency=medium
 
   * UCL Study: clipboard events + entry and text view additional paste events

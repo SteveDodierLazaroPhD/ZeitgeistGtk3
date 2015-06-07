@@ -48,6 +48,8 @@ void              _gtk_recent_chooser_set_use_action_appearance (GtkRecentChoose
 								 gboolean           use_appearance);
 gboolean          _gtk_recent_chooser_get_use_action_appearance (GtkRecentChooser  *recent_chooser);
 
+gchar *        _gtk_recent_chooser_get_current_uri  (GtkRecentChooser  *chooser, gboolean internal);
+
 G_END_DECLS
 
 #endif /* ! __GTK_RECENT_CHOOSER_PRIVATE_H__ */

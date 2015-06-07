@@ -21,6 +21,9 @@
 
 #include "gtkrecentchooser.h"
 #include "gtkrecentchooserprivate.h"
+#include "gtkrecentchooserdialog.h"
+#include "gtkrecentchoosermenu.h"
+#include "gtkrecentchooserutils.h"
 #include "gtkrecentmanager.h"
 #include "deprecated/gtkrecentaction.h"
 #include "deprecated/gtkactivatable.h"
@@ -28,6 +31,19 @@
 #include "gtktypebuiltins.h"
 #include "gtkprivate.h"
 #include "gtkmarshalers.h"
+
+#include "zgtrackutils.h"
+#include <zeitgeist.h>
+#include <gio/gio.h>
+
+#ifdef GDK_WINDOWING_X11
+#include <gdk/gdkx.h>
+#endif
+
+#define ZG_INTERPRETATION_RECENT_FILE_ACCESS      "activity://gui-toolkit/gtk3/RecentFile/FileAccess"
+#define ZG_INTERPRETATION_RECENT_GTK_MENU         "activity://gui-toolkit/gtk3/RecentChooserMenu"
+#define ZG_INTERPRETATION_RECENT_GTK_DLG          "activity://gui-toolkit/gtk3/RecentChooserDialog"
+#define ZG_INTERPRETATION_RECENT_GTK_WDG          "activity://gui-toolkit/gtk3/RecentChooserGenericWidget"
 
 /**
  * SECTION:gtkrecentchooser
@@ -681,6 +697,199 @@ gtk_recent_chooser_set_sort_func  (GtkRecentChooser  *chooser,
   							 data_destroy);
 }
 
+gchar *
+gtk_recent_chooser_get_window_id (GtkRecentChooser *chooser)
+{
+  g_return_val_if_fail (GTK_IS_RECENT_CHOOSER (chooser), NULL);
+
+  gchar *window_id = GTK_RECENT_CHOOSER_GET_IFACE (chooser)->get_window_id (chooser);
+
+  if (window_id)
+    return window_id;
+  else
+    return g_strdup ("n/a");
+}
+
+static GtkRecentInfo *
+_gtk_recent_chooser_get_current_item (GtkRecentChooser *chooser, gboolean internal)
+{
+  GtkRecentManager *manager;
+  GtkRecentInfo *retval;
+  gchar *uri;
+
+  g_return_val_if_fail (GTK_IS_RECENT_CHOOSER (chooser), NULL);
+
+  uri = _gtk_recent_chooser_get_current_uri (chooser, internal);
+  if (!uri)
+    return NULL;
+
+  manager = _gtk_recent_chooser_get_recent_manager (chooser);
+  retval = gtk_recent_manager_lookup_item (manager, uri, NULL);
+  g_free (uri);
+
+  return retval;
+}
+
+typedef struct __ZeitgeistRecentChooserData
+{
+  gchar            *window_id;
+  GtkRecentInfo    *recent_info;
+} _ZeitgeistRecentChooserData;
+
+static void
+_log_zeitgeist_get_recent_file_cb (GObject *source_object,
+                                   GAsyncResult *res,
+                                   gpointer user_data)
+{
+  _ZeitgeistRecentChooserData *data = user_data;
+
+  GFile *file = (GFile *) source_object;
+  gchar *uri = g_file_get_uri (file);
+  gchar *origin = g_path_get_dirname (uri);
+  gchar *mime_type = NULL;
+  gchar *display_name = NULL;
+  GFileInfo *info = g_file_query_info_finish (file, res, NULL);
+
+  // Info was found!
+  if (info) {
+    display_name = g_strdup (g_file_info_get_display_name (info));
+    #ifdef __ZEITGEIST_FAST__
+    mime_type = g_content_type_get_mime_type (g_file_info_get_attribute_string (info, G_FILE_ATTRIBUTE_STANDARD_FAST_CONTENT_TYPE));
+    #else
+    mime_type = g_content_type_get_mime_type (g_file_info_get_content_type (info));
+    #endif
+  } else {
+    display_name = g_path_get_basename (uri);
+    mime_type = g_content_type_guess (uri, NULL, 0, NULL);
+  }
+  g_object_unref (file);
+
+  // Last-resort solutions for display name and mime type
+  if (!display_name)
+    display_name = g_strdup (uri);
+  if (!mime_type)
+    mime_type = g_strdup ("application/octet-stream");
+
+  // Get access to Zeitgeist logger daemon
+  ZeitgeistLog *log = zeitgeist_log_get_default ();
+
+  // Create the event to be added, with the known information
+  gchar *actor_name = _get_actor_name_from_pid (getpid());
+  ZeitgeistEvent *event = zeitgeist_event_new_full (
+              ZG_INTERPRETATION_RECENT_FILE_ACCESS,
+              ZEITGEIST_ZG_USER_ACTIVITY,
+              actor_name,
+              NULL);
+  g_free (actor_name);
+
+  zeitgeist_event_add_subject (event, zeitgeist_subject_new_full (uri,
+                                      NULL,
+                                      NULL,
+                                      mime_type,
+                                      origin,
+                                      display_name,
+                                      NULL));
+  g_free (uri);
+  g_free (origin);
+  g_free (display_name);
+  g_free (mime_type);
+
+  // Add the UCL metadata
+  gsize len = 0, i = 0;
+  gchar **prev_owners = gtk_recent_info_get_applications (data->recent_info, &len);
+  for (; i < len; ++i)
+  {
+    gchar *name = NULL;
+    GError *err = NULL;
+    GAppInfo *app_info = gtk_recent_info_create_app_info (data->recent_info, prev_owners[i], &err);
+    if (!err && app_info)
+    {
+      name = g_strdup (g_app_info_get_name (app_info));
+    }
+    else
+    {
+      name = g_strdup (prev_owners[i]);
+      if (err)
+        g_error_free (err);
+    }
+    gchar *display_name = g_strdup_printf ("Previous user (%lu/%lu): %s", i+1, len, prev_owners[i]);
+    zeitgeist_event_add_subject (event, zeitgeist_subject_new_full (name,
+                                      ZEITGEIST_NFO_SOFTWARE,
+                                      ZEITGEIST_ZG_HEURISTIC_ACTIVITY,
+                                      "application/octet-stream",
+                                      NULL,
+                                      display_name,
+                                      NULL));
+    g_free (display_name);
+    g_free (name);
+  }
+  g_strfreev (prev_owners);
+  gtk_recent_info_unref (data->recent_info);
+
+  // Add metadata about the widget -- doesn't work (returns Widget, can crash bc/ unref'd dialog)
+/*  gchar *widget_uri = NULL;
+  if (GTK_IS_RECENT_CHOOSER_MENU (chooser))
+    widget_uri = ZG_INTERPRETATION_RECENT_GTK_MENU;
+  else if (GTK_IS_RECENT_CHOOSER_DIALOG (chooser))
+    widget_uri = ZG_INTERPRETATION_RECENT_GTK_DLG;
+  else
+    widget_uri = ZG_INTERPRETATION_RECENT_GTK_WDG;
+
+  gchar *widget_display = g_strdup_printf ("Widget type: %s", widget_uri);
+  zeitgeist_event_add_subject (event, zeitgeist_subject_new_full (widget_uri,
+                                  ZEITGEIST_NFO_SOFTWARE,
+                                  ZEITGEIST_ZG_HEURISTIC_ACTIVITY,
+                                  "application/octet-stream",
+                                  NULL,
+                                  widget_display,
+                                  NULL));
+  g_free (widget_display); */
+
+  // Add the UCL metadata
+  char *study_uri = g_strdup_printf ("activity://null///pid://%d///winid://%s///", getpid(), data->window_id);
+  zeitgeist_event_add_subject (event, zeitgeist_subject_new_full (study_uri,
+    ZEITGEIST_NFO_SOFTWARE,
+    ZEITGEIST_ZG_WORLD_ACTIVITY,
+    "application/octet-stream",
+    NULL,
+    "ucl-study-metadata",
+    NULL));
+  g_free (data->window_id);
+  g_free (study_uri);
+
+  // Send the event
+  zeitgeist_log_insert_events_no_reply (log, event, NULL);
+  g_free (data);
+}
+
+static void
+_log_zeitgeist_get_recent_file (GtkRecentChooser *chooser,
+                                gchar            *uri)
+{
+  // Test for RecentChooser and presence of files to track
+  g_return_if_fail (GTK_IS_RECENT_CHOOSER (chooser));
+  g_return_if_fail (uri != NULL);
+
+  GFile *file = g_file_new_for_uri (uri);
+  if (!file)
+  {
+    return;
+  }
+
+  _ZeitgeistRecentChooserData *data = g_malloc (sizeof (_ZeitgeistRecentChooserData));
+
+  data->window_id = gtk_recent_chooser_get_window_id (chooser);
+  data->recent_info = _gtk_recent_chooser_get_current_item (chooser, TRUE);
+
+  g_file_query_info_async (file,
+        G_FILE_ATTRIBUTE_STANDARD_DISPLAY_NAME ","
+        G_FILE_ATTRIBUTE_STANDARD_CONTENT_TYPE,
+        G_FILE_QUERY_INFO_NONE,
+        G_PRIORITY_DEFAULT,
+        NULL,
+        _log_zeitgeist_get_recent_file_cb, data);
+}
+
 /**
  * gtk_recent_chooser_set_current_uri:
  * @chooser: a #GtkRecentChooser
@@ -699,8 +908,20 @@ gtk_recent_chooser_set_current_uri (GtkRecentChooser  *chooser,
 				    GError           **error)
 {
   g_return_val_if_fail (GTK_IS_RECENT_CHOOSER (chooser), FALSE);
-  
+
   return GTK_RECENT_CHOOSER_GET_IFACE (chooser)->set_current_uri (chooser, uri, error);
+}
+
+gchar *
+_gtk_recent_chooser_get_current_uri (GtkRecentChooser *chooser, gboolean internal)
+{
+  g_return_val_if_fail (GTK_IS_RECENT_CHOOSER (chooser), NULL);
+  gchar *uri = GTK_RECENT_CHOOSER_GET_IFACE (chooser)->get_current_uri (chooser);
+
+  if (uri && !internal)
+    _log_zeitgeist_get_recent_file (chooser, uri);
+
+  return uri;
 }
 
 /**
@@ -716,9 +937,7 @@ gtk_recent_chooser_set_current_uri (GtkRecentChooser  *chooser,
 gchar *
 gtk_recent_chooser_get_current_uri (GtkRecentChooser *chooser)
 {
-  g_return_val_if_fail (GTK_IS_RECENT_CHOOSER (chooser), NULL);
-  
-  return GTK_RECENT_CHOOSER_GET_IFACE (chooser)->get_current_uri (chooser);
+  return _gtk_recent_chooser_get_current_uri (chooser, FALSE);
 }
 
 /**
@@ -735,21 +954,7 @@ gtk_recent_chooser_get_current_uri (GtkRecentChooser *chooser)
 GtkRecentInfo *
 gtk_recent_chooser_get_current_item (GtkRecentChooser *chooser)
 {
-  GtkRecentManager *manager;
-  GtkRecentInfo *retval;
-  gchar *uri;
-  
-  g_return_val_if_fail (GTK_IS_RECENT_CHOOSER (chooser), NULL);
-  
-  uri = gtk_recent_chooser_get_current_uri (chooser);
-  if (!uri)
-    return NULL;
-  
-  manager = _gtk_recent_chooser_get_recent_manager (chooser);
-  retval = gtk_recent_manager_lookup_item (manager, uri, NULL);
-  g_free (uri);
-  
-  return retval;
+  return _gtk_recent_chooser_get_current_item (chooser, FALSE);
 }
 
 /**
@@ -1020,6 +1225,8 @@ _gtk_recent_chooser_item_activated (GtkRecentChooser *chooser)
   g_return_if_fail (GTK_IS_RECENT_CHOOSER (chooser));
   
   g_signal_emit (chooser, chooser_signals[ITEM_ACTIVATED], 0);
+  gchar *uri = _gtk_recent_chooser_get_current_uri (chooser, TRUE);
+  g_free (uri);
 }
 
 void

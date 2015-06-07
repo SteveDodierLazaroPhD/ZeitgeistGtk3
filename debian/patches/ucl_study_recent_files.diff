@@ -1,0 +1,1220 @@
+Index: gtk+3.0-3.14.13/examples/Makefile.am
+===================================================================
+--- gtk+3.0-3.14.13.orig/examples/Makefile.am
++++ gtk+3.0-3.14.13/examples/Makefile.am
+@@ -29,7 +29,8 @@ noinst_PROGRAMS = \
+ 	drawing					\
+ 	builder					\
+ 	search-bar				\
+-	filedialog
++	filedialog				\
++	recentdialog
+ 
+ EXTRA_DIST = builder.ui
+ 
+Index: gtk+3.0-3.14.13/examples/recentdialog.c
+===================================================================
+--- /dev/null
++++ gtk+3.0-3.14.13/examples/recentdialog.c
+@@ -0,0 +1,555 @@
++#include <stdlib.h>
++#include <gtk/gtk.h>
++#include <glib/gprintf.h>
++
++static void
++activate_toggle (GSimpleAction *action,
++                 GVariant      *parameter,
++                 gpointer       user_data)
++{
++  GVariant *state;
++
++  state = g_action_get_state (G_ACTION (action));
++  g_action_change_state (G_ACTION (action), g_variant_new_boolean (!g_variant_get_boolean (state)));
++  g_variant_unref (state);
++}
++
++static void
++change_fullscreen_state (GSimpleAction *action,
++                         GVariant      *state,
++                         gpointer       user_data)
++{
++  if (g_variant_get_boolean (state))
++    gtk_window_fullscreen (user_data);
++  else
++    gtk_window_unfullscreen (user_data);
++
++  g_simple_action_set_state (action, state);
++}
++
++static GtkClipboard *
++get_clipboard (GtkWidget *widget)
++{
++  return gtk_widget_get_clipboard (widget, gdk_atom_intern_static_string ("CLIPBOARD"));
++}
++
++static void
++window_open (GSimpleAction *action,
++             GVariant      *parameter,
++             gpointer       user_data)
++{
++  GtkWindow *window = GTK_WINDOW (user_data);
++  GtkWidget *dialog;
++
++  dialog = gtk_recent_chooser_dialog_new ("Recent File",
++                                        window,
++                                        "Cancel", GTK_RESPONSE_CANCEL,
++                                        "Accept", GTK_RESPONSE_ACCEPT,
++                                        NULL);
++
++  if (gtk_dialog_run (GTK_DIALOG (dialog)) == GTK_RESPONSE_ACCEPT) {
++    char *filename;
++    filename = gtk_recent_chooser_get_current_uri (GTK_RECENT_CHOOSER (dialog));
++    g_printf ("OPENING FILE `%s`\n", filename);
++    g_free (filename);
++  }
++
++  gtk_widget_destroy (dialog);
++}
++
++static void
++window_copy (GSimpleAction *action,
++             GVariant      *parameter,
++             gpointer       user_data)
++{
++  GtkWindow *window = GTK_WINDOW (user_data);
++  GtkTextView *text = g_object_get_data ((GObject*)window, "plugman-text");
++
++  gtk_text_buffer_copy_clipboard (gtk_text_view_get_buffer (text),
++                                  get_clipboard ((GtkWidget*) text));
++}
++
++static void
++window_paste (GSimpleAction *action,
++              GVariant      *parameter,
++              gpointer       user_data)
++{
++  GtkWindow *window = GTK_WINDOW (user_data);
++  GtkTextView *text = g_object_get_data ((GObject*)window, "plugman-text");
++
++  gtk_text_buffer_paste_clipboard (gtk_text_view_get_buffer (text),
++                                   get_clipboard ((GtkWidget*) text),
++                                   NULL,
++                                   TRUE);
++
++}
++
++static void
++widget_open  (GSimpleAction *action,
++              GVariant      *parameter,
++              gpointer       user_data)
++{
++  GtkWidget *opener = GTK_WIDGET (user_data);
++
++  GtkRecentInfo *file = gtk_recent_chooser_get_current_item (GTK_RECENT_CHOOSER (opener));
++
++  if (file)
++    g_printf ("File opened through widget: %s\n", gtk_recent_info_get_uri (file));
++
++  gtk_recent_info_unref (file);
++}
++
++void
++btn_file_set (GtkRecentChooser *chooser,
++              gpointer          user_data)
++{
++    gchar *uri = gtk_recent_chooser_get_current_uri (chooser);
++    g_printf ("Button uri is %s\n", uri);
++    g_free (uri);
++}
++
++static GActionEntry win_entries[] = {
++  { "open", window_open, NULL, NULL, NULL },
++  { "copy", window_copy, NULL, NULL, NULL },
++  { "paste", window_paste, NULL, NULL, NULL },
++  { "fullscreen", activate_toggle, NULL, "false", change_fullscreen_state }
++};
++
++static void
++new_window (GApplication *app,
++            GFile        *file)
++{
++  GtkWidget *window, *grid, *scrolled, *view, *opener, *button, *choosebutton, *rmenu;
++
++  window = gtk_application_window_new (GTK_APPLICATION (app));
++  gtk_window_set_default_size ((GtkWindow*)window, 640, 480);
++  g_action_map_add_action_entries (G_ACTION_MAP (window), win_entries, G_N_ELEMENTS (win_entries), window);
++  gtk_window_set_title (GTK_WINDOW (window), "File Chooser Tests");
++
++  grid = gtk_grid_new ();
++  gtk_container_add (GTK_CONTAINER (window), grid);
++
++  scrolled = gtk_scrolled_window_new (NULL, NULL);
++  gtk_widget_set_hexpand (scrolled, TRUE);
++  gtk_widget_set_vexpand (scrolled, TRUE);
++  view = gtk_text_view_new ();
++
++  g_object_set_data ((GObject*)window, "plugman-text", view);
++
++  gtk_container_add (GTK_CONTAINER (scrolled), view);
++
++  opener = gtk_recent_chooser_widget_new ();
++  gtk_widget_set_hexpand (opener, TRUE);
++  gtk_widget_set_vexpand (opener, TRUE);
++  button = gtk_button_new_with_mnemonic ("_Open");
++  rmenu = gtk_recent_chooser_menu_new ();
++  choosebutton = gtk_menu_button_new ();
++  gtk_menu_button_set_popup (GTK_MENU_BUTTON (choosebutton), rmenu);
++
++  g_signal_connect (button, "button-release-event", G_CALLBACK (widget_open), opener);
++  g_signal_connect (GTK_RECENT_CHOOSER (rmenu), "item-activated", G_CALLBACK (btn_file_set), NULL);
++
++  gtk_grid_attach (GTK_GRID (grid), opener, 0, 0, 1, 1);
++  gtk_grid_attach (GTK_GRID (grid), button, 0, 1, 1, 1);
++  gtk_grid_attach (GTK_GRID (grid), scrolled, 1, 0, 1, 1);
++  gtk_grid_attach (GTK_GRID (grid), choosebutton, 1, 1, 1, 1);
++
++  if (file != NULL)
++    {
++      gchar *contents;
++      gsize length;
++
++      if (g_file_load_contents (file, NULL, &contents, &length, NULL, NULL))
++        {
++          GtkTextBuffer *buffer;
++
++          buffer = gtk_text_view_get_buffer (GTK_TEXT_VIEW (view));
++          gtk_text_buffer_set_text (buffer, contents, length);
++          g_free (contents);
++        }
++    }
++
++  gtk_widget_show_all (GTK_WIDGET (window));
++}
++
++static void
++plug_man_activate (GApplication *application)
++{
++  new_window (application, NULL);
++}
++
++static void
++plug_man_open (GApplication  *application,
++                GFile        **files,
++                gint           n_files,
++                const gchar   *hint)
++{
++  gint i;
++
++  for (i = 0; i < n_files; i++)
++    new_window (application, files[i]);
++}
++
++typedef GtkApplication PlugMan;
++typedef GtkApplicationClass PlugManClass;
++
++G_DEFINE_TYPE (PlugMan, plug_man, GTK_TYPE_APPLICATION)
++
++static void
++plug_man_finalize (GObject *object)
++{
++  G_OBJECT_CLASS (plug_man_parent_class)->finalize (object);
++}
++
++static void
++show_about (GSimpleAction *action,
++            GVariant      *parameter,
++            gpointer       user_data)
++{
++  gtk_show_about_dialog (NULL,
++                         "program-name", "Plugman",
++                         "title", "About Plugman",
++                         "comments", "A cheap Bloatpad clone.",
++                         NULL);
++}
++
++
++static void
++quit_app (GSimpleAction *action,
++          GVariant      *parameter,
++          gpointer       user_data)
++{
++  GList *list, *next;
++  GtkWindow *win;
++
++  g_print ("Going down...\n");
++
++  list = gtk_application_get_windows (GTK_APPLICATION (g_application_get_default ()));
++  while (list)
++    {
++      win = list->data;
++      next = list->next;
++
++      gtk_widget_destroy (GTK_WIDGET (win));
++
++      list = next;
++    }
++}
++
++static gboolean is_red_plugin_enabled;
++static gboolean is_black_plugin_enabled;
++
++static gboolean
++plugin_enabled (const gchar *name)
++{
++  if (g_strcmp0 (name, "red") == 0)
++    return is_red_plugin_enabled;
++  else
++    return is_black_plugin_enabled;
++}
++
++static GMenuModel *
++find_plugin_menu (void)
++{
++  return (GMenuModel*) g_object_get_data (G_OBJECT (g_application_get_default ()), "plugin-menu");
++}
++
++static void
++plugin_action (GAction  *action,
++               GVariant *parameter,
++               gpointer  data)
++{
++  GApplication *app;
++  GList *list;
++  GtkWindow *window;
++  GtkWidget *text;
++  GdkRGBA color;
++
++  app = g_application_get_default ();
++  list = gtk_application_get_windows (GTK_APPLICATION (app));
++  window = GTK_WINDOW (list->data);
++  text = g_object_get_data ((GObject*)window, "plugman-text");
++
++  gdk_rgba_parse (&color, g_action_get_name (action));
++
++  gtk_widget_override_color (text, 0, &color);
++}
++
++static void
++enable_plugin (const gchar *name)
++{
++  GMenuModel *plugin_menu;
++  GAction *action;
++
++  g_print ("Enabling '%s' plugin\n", name);
++
++  action = (GAction *)g_simple_action_new (name, NULL);
++  g_signal_connect (action, "activate", G_CALLBACK (plugin_action), (gpointer)name);
++  g_action_map_add_action (G_ACTION_MAP (g_application_get_default ()), action);
++  g_print ("Actions of '%s' plugin added\n", name);
++  g_object_unref (action);
++
++  plugin_menu = find_plugin_menu ();
++  if (plugin_menu)
++    {
++      GMenu *section;
++      GMenuItem *item;
++      gchar *label;
++      gchar *action_name;
++
++      section = g_menu_new ();
++      label = g_strdup_printf ("Turn text %s", name);
++      action_name = g_strconcat ("app.", name, NULL);
++      g_menu_insert (section, 0, label, action_name);
++      g_free (label);
++      g_free (action_name);
++      item = g_menu_item_new_section (NULL, (GMenuModel*)section);
++      g_menu_item_set_attribute (item, "id", "s", name);
++      g_menu_append_item (G_MENU (plugin_menu), item);
++      g_object_unref (item);
++      g_object_unref (section);
++      g_print ("Menus of '%s' plugin added\n", name);
++    }
++  else
++    g_warning ("Plugin menu not found\n");
++
++  if (g_strcmp0 (name, "red") == 0)
++    is_red_plugin_enabled = TRUE;
++  else
++    is_black_plugin_enabled = TRUE;
++}
++
++static void
++disable_plugin (const gchar *name)
++{
++  GMenuModel *plugin_menu;
++
++  g_print ("Disabling '%s' plugin\n", name);
++
++  plugin_menu = find_plugin_menu ();
++  if (plugin_menu)
++    {
++      const gchar *id;
++      gint i;
++
++      for (i = 0; i < g_menu_model_get_n_items (plugin_menu); i++)
++        {
++           if (g_menu_model_get_item_attribute (plugin_menu, i, "id", "s", &id) &&
++               g_strcmp0 (id, name) == 0)
++             {
++               g_menu_remove (G_MENU (plugin_menu), i);
++               g_print ("Menus of '%s' plugin removed\n", name);
++             }
++        }
++    }
++  else
++    g_warning ("Plugin menu not found\n");
++
++  g_action_map_remove_action (G_ACTION_MAP (g_application_get_default ()), name);
++  g_print ("Actions of '%s' plugin removed\n", name);
++
++  if (g_strcmp0 (name, "red") == 0)
++    is_red_plugin_enabled = FALSE;
++  else
++    is_black_plugin_enabled = FALSE;
++}
++
++static void
++enable_or_disable_plugin (GtkToggleButton *button,
++                          const gchar     *name)
++{
++  if (plugin_enabled (name))
++    disable_plugin (name);
++  else
++    enable_plugin (name);
++}
++
++
++static void
++configure_plugins (GSimpleAction *action,
++                   GVariant      *parameter,
++                   gpointer       user_data)
++{
++  GtkBuilder *builder;
++  GtkWidget *dialog;
++  GtkWidget *check;
++  GError *error = NULL;
++
++  builder = gtk_builder_new ();
++  gtk_builder_add_from_string (builder,
++                               "<interface>"
++                               "  <object class='GtkDialog' id='plugin-dialog'>"
++                               "    <property name='border-width'>12</property>"
++                               "    <property name='title'>Plugins</property>"
++                               "    <child internal-child='vbox'>"
++                               "      <object class='GtkBox' id='content-area'>"
++                               "        <property name='visible'>True</property>"
++                               "        <child>"
++                               "          <object class='GtkCheckButton' id='red-plugin'>"
++                               "            <property name='label' translatable='yes'>Red Plugin - turn your text red</property>"
++                               "            <property name='visible'>True</property>"
++                               "          </object>"
++                               "        </child>"
++                               "        <child>"
++                               "          <object class='GtkCheckButton' id='black-plugin'>"
++                               "            <property name='label' translatable='yes'>Black Plugin - turn your text black</property>"
++                               "            <property name='visible'>True</property>"
++                               "          </object>"
++                               "        </child>"
++                               "      </object>"
++                               "    </child>"
++                               "    <child internal-child='action_area'>"
++                               "      <object class='GtkButtonBox' id='action-area'>"
++                               "        <property name='visible'>True</property>"
++                               "        <child>"
++                               "          <object class='GtkButton' id='close-button'>"
++                               "            <property name='label' translatable='yes'>Close</property>"
++                               "            <property name='visible'>True</property>"
++                               "          </object>"
++                               "        </child>"
++                               "      </object>"
++                               "    </child>"
++                               "    <action-widgets>"
++                               "      <action-widget response='-5'>close-button</action-widget>"
++                               "    </action-widgets>"
++                               "  </object>"
++                               "</interface>", -1, &error);
++  if (error)
++    {
++      g_warning ("%s", error->message);
++      g_error_free (error);
++      return;
++    }
++
++  dialog = (GtkWidget *)gtk_builder_get_object (builder, "plugin-dialog");
++  check = (GtkWidget *)gtk_builder_get_object (builder, "red-plugin");
++  gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (check), plugin_enabled ("red"));
++  g_signal_connect (check, "toggled", G_CALLBACK (enable_or_disable_plugin), "red");
++  check = (GtkWidget *)gtk_builder_get_object (builder, "black-plugin");
++  gtk_toggle_button_set_active (GTK_TOGGLE_BUTTON (check), plugin_enabled ("black"));
++  g_signal_connect (check, "toggled", G_CALLBACK (enable_or_disable_plugin), "black");
++
++  g_signal_connect (dialog, "response", G_CALLBACK (gtk_widget_destroy), NULL);
++
++  gtk_window_present (GTK_WINDOW (dialog));
++}
++
++static GActionEntry app_entries[] = {
++  { "about", show_about, NULL, NULL, NULL },
++  { "quit", quit_app, NULL, NULL, NULL },
++  { "plugins", configure_plugins, NULL, NULL, NULL },
++};
++
++static void
++plug_man_startup (GApplication *application)
++{
++  GtkBuilder *builder;
++
++  G_APPLICATION_CLASS (plug_man_parent_class)
++    ->startup (application);
++
++  g_action_map_add_action_entries (G_ACTION_MAP (application), app_entries, G_N_ELEMENTS (app_entries), application);
++
++  builder = gtk_builder_new ();
++  gtk_builder_add_from_string (builder,
++                               "<interface>"
++                               "  <menu id='app-menu'>"
++                               "    <section>"
++                               "      <item>"
++                               "        <attribute name='label' translatable='yes'>_About Plugman</attribute>"
++                               "        <attribute name='action'>app.about</attribute>"
++                               "      </item>"
++                               "    </section>"
++                               "    <section>"
++                               "      <item>"
++                               "        <attribute name='label' translatable='yes'>_Quit</attribute>"
++                               "        <attribute name='action'>app.quit</attribute>"
++                               "        <attribute name='accel'>&lt;Primary&gt;q</attribute>"
++                               "      </item>"
++                               "    </section>"
++                               "  </menu>"
++                               "  <menu id='menubar'>"
++                               "    <submenu>"
++                               "      <attribute name='label' translatable='yes'>_Edit</attribute>"
++                               "      <section>"
++                               "        <item>"
++                               "          <attribute name='label' translatable='yes'>_Open</attribute>"
++                               "          <attribute name='action'>win.open</attribute>"
++                               "        </item>"
++                               "        <item>"
++                               "          <attribute name='label' translatable='yes'>_Copy</attribute>"
++                               "          <attribute name='action'>win.copy</attribute>"
++                               "        </item>"
++                               "        <item>"
++                               "          <attribute name='label' translatable='yes'>_Paste</attribute>"
++                               "          <attribute name='action'>win.paste</attribute>"
++                               "        </item>"
++                               "      </section>"
++                               "      <item><link name='section' id='plugins'>"
++                               "      </link></item>"
++                               "      <section>"
++                               "        <item>"
++                               "          <attribute name='label' translatable='yes'>Plugins</attribute>"
++                               "          <attribute name='action'>app.plugins</attribute>"
++                               "        </item>"
++                               "      </section>"
++                               "    </submenu>"
++                               "    <submenu>"
++                               "      <attribute name='label' translatable='yes'>_View</attribute>"
++                               "      <section>"
++                               "        <item>"
++                               "          <attribute name='label' translatable='yes'>_Fullscreen</attribute>"
++                               "          <attribute name='action'>win.fullscreen</attribute>"
++                               "        </item>"
++                               "      </section>"
++                               "    </submenu>"
++                               "  </menu>"
++                               "</interface>", -1, NULL);
++  gtk_application_set_app_menu (GTK_APPLICATION (application), G_MENU_MODEL (gtk_builder_get_object (builder, "app-menu")));
++  gtk_application_set_menubar (GTK_APPLICATION (application), G_MENU_MODEL (gtk_builder_get_object (builder, "menubar")));
++  g_object_set_data_full (G_OBJECT (application), "plugin-menu", gtk_builder_get_object (builder, "plugins"), g_object_unref);
++  g_object_unref (builder);
++}
++
++static void
++plug_man_init (PlugMan *app)
++{
++}
++
++static void
++plug_man_class_init (PlugManClass *class)
++{
++  GApplicationClass *application_class = G_APPLICATION_CLASS (class);
++  GObjectClass *object_class = G_OBJECT_CLASS (class);
++
++  application_class->startup = plug_man_startup;
++  application_class->activate = plug_man_activate;
++  application_class->open = plug_man_open;
++
++  object_class->finalize = plug_man_finalize;
++
++}
++
++PlugMan *
++plug_man_new (void)
++{
++  return g_object_new (plug_man_get_type (),
++                       "application-id", "org.gtk.Test.plugman",
++                       "flags", G_APPLICATION_HANDLES_OPEN,
++                       NULL);
++}
++
++int
++main (int argc, char **argv)
++{
++  PlugMan *plug_man;
++  int status;
++
++  plug_man = plug_man_new ();
++  gtk_application_add_accelerator (GTK_APPLICATION (plug_man),
++                                   "F11", "win.fullscreen", NULL);
++  status = g_application_run (G_APPLICATION (plug_man), argc, argv);
++  g_object_unref (plug_man);
++
++  return status;
++}
+Index: gtk+3.0-3.14.13/gtk/deprecated/gtkrecentaction.c
+===================================================================
+--- gtk+3.0-3.14.13.orig/gtk/deprecated/gtkrecentaction.c
++++ gtk+3.0-3.14.13/gtk/deprecated/gtkrecentaction.c
+@@ -92,6 +92,12 @@ G_DEFINE_TYPE_WITH_CODE (GtkRecentAction
+                          G_IMPLEMENT_INTERFACE (GTK_TYPE_RECENT_CHOOSER,
+                                                 gtk_recent_chooser_iface_init));
+ 
++static gchar *
++gtk_recent_action_get_window_id (GtkRecentChooser *chooser)
++{
++  return NULL;
++}
++
+ static gboolean
+ gtk_recent_action_set_current_uri (GtkRecentChooser  *chooser,
+                                    const gchar       *uri,
+@@ -292,6 +298,7 @@ gtk_recent_action_list_filters (GtkRecen
+ static void
+ gtk_recent_chooser_iface_init (GtkRecentChooserIface *iface)
+ {
++  iface->get_window_id = gtk_recent_action_get_window_id;
+   iface->set_current_uri = gtk_recent_action_set_current_uri;
+   iface->get_current_uri = gtk_recent_action_get_current_uri;
+   iface->select_uri = gtk_recent_action_select_uri;
+Index: gtk+3.0-3.14.13/gtk/gtkrecentchooser.c
+===================================================================
+--- gtk+3.0-3.14.13.orig/gtk/gtkrecentchooser.c
++++ gtk+3.0-3.14.13/gtk/gtkrecentchooser.c
+@@ -21,6 +21,9 @@
+ 
+ #include "gtkrecentchooser.h"
+ #include "gtkrecentchooserprivate.h"
++#include "gtkrecentchooserdialog.h"
++#include "gtkrecentchoosermenu.h"
++#include "gtkrecentchooserutils.h"
+ #include "gtkrecentmanager.h"
+ #include "deprecated/gtkrecentaction.h"
+ #include "deprecated/gtkactivatable.h"
+@@ -29,6 +32,19 @@
+ #include "gtkprivate.h"
+ #include "gtkmarshalers.h"
+ 
++#include "zgtrackutils.h"
++#include <zeitgeist.h>
++#include <gio/gio.h>
++
++#ifdef GDK_WINDOWING_X11
++#include <gdk/gdkx.h>
++#endif
++
++#define ZG_INTERPRETATION_RECENT_FILE_ACCESS      "activity://gui-toolkit/gtk3/RecentFile/FileAccess"
++#define ZG_INTERPRETATION_RECENT_GTK_MENU         "activity://gui-toolkit/gtk3/RecentChooserMenu"
++#define ZG_INTERPRETATION_RECENT_GTK_DLG          "activity://gui-toolkit/gtk3/RecentChooserDialog"
++#define ZG_INTERPRETATION_RECENT_GTK_WDG          "activity://gui-toolkit/gtk3/RecentChooserGenericWidget"
++
+ /**
+  * SECTION:gtkrecentchooser
+  * @Short_description: Interface implemented by widgets displaying recently
+@@ -681,6 +697,199 @@ gtk_recent_chooser_set_sort_func  (GtkRe
+   							 data_destroy);
+ }
+ 
++gchar *
++gtk_recent_chooser_get_window_id (GtkRecentChooser *chooser)
++{
++  g_return_val_if_fail (GTK_IS_RECENT_CHOOSER (chooser), NULL);
++
++  gchar *window_id = GTK_RECENT_CHOOSER_GET_IFACE (chooser)->get_window_id (chooser);
++
++  if (window_id)
++    return window_id;
++  else
++    return g_strdup ("n/a");
++}
++
++static GtkRecentInfo *
++_gtk_recent_chooser_get_current_item (GtkRecentChooser *chooser, gboolean internal)
++{
++  GtkRecentManager *manager;
++  GtkRecentInfo *retval;
++  gchar *uri;
++
++  g_return_val_if_fail (GTK_IS_RECENT_CHOOSER (chooser), NULL);
++
++  uri = _gtk_recent_chooser_get_current_uri (chooser, internal);
++  if (!uri)
++    return NULL;
++
++  manager = _gtk_recent_chooser_get_recent_manager (chooser);
++  retval = gtk_recent_manager_lookup_item (manager, uri, NULL);
++  g_free (uri);
++
++  return retval;
++}
++
++typedef struct __ZeitgeistRecentChooserData
++{
++  gchar            *window_id;
++  GtkRecentInfo    *recent_info;
++} _ZeitgeistRecentChooserData;
++
++static void
++_log_zeitgeist_get_recent_file_cb (GObject *source_object,
++                                   GAsyncResult *res,
++                                   gpointer user_data)
++{
++  _ZeitgeistRecentChooserData *data = user_data;
++
++  GFile *file = (GFile *) source_object;
++  gchar *uri = g_file_get_uri (file);
++  gchar *origin = g_path_get_dirname (uri);
++  gchar *mime_type = NULL;
++  gchar *display_name = NULL;
++  GFileInfo *info = g_file_query_info_finish (file, res, NULL);
++
++  // Info was found!
++  if (info) {
++    display_name = g_strdup (g_file_info_get_display_name (info));
++    #ifdef __ZEITGEIST_FAST__
++    mime_type = g_content_type_get_mime_type (g_file_info_get_attribute_string (info, G_FILE_ATTRIBUTE_STANDARD_FAST_CONTENT_TYPE));
++    #else
++    mime_type = g_content_type_get_mime_type (g_file_info_get_content_type (info));
++    #endif
++  } else {
++    display_name = g_path_get_basename (uri);
++    mime_type = g_content_type_guess (uri, NULL, 0, NULL);
++  }
++  g_object_unref (file);
++
++  // Last-resort solutions for display name and mime type
++  if (!display_name)
++    display_name = g_strdup (uri);
++  if (!mime_type)
++    mime_type = g_strdup ("application/octet-stream");
++
++  // Get access to Zeitgeist logger daemon
++  ZeitgeistLog *log = zeitgeist_log_get_default ();
++
++  // Create the event to be added, with the known information
++  gchar *actor_name = _get_actor_name_from_pid (getpid());
++  ZeitgeistEvent *event = zeitgeist_event_new_full (
++              ZG_INTERPRETATION_RECENT_FILE_ACCESS,
++              ZEITGEIST_ZG_USER_ACTIVITY,
++              actor_name,
++              NULL);
++  g_free (actor_name);
++
++  zeitgeist_event_add_subject (event, zeitgeist_subject_new_full (uri,
++                                      NULL,
++                                      NULL,
++                                      mime_type,
++                                      origin,
++                                      display_name,
++                                      NULL));
++  g_free (uri);
++  g_free (origin);
++  g_free (display_name);
++  g_free (mime_type);
++
++  // Add the UCL metadata
++  gsize len = 0, i = 0;
++  gchar **prev_owners = gtk_recent_info_get_applications (data->recent_info, &len);
++  for (; i < len; ++i)
++  {
++    gchar *name = NULL;
++    GError *err = NULL;
++    GAppInfo *app_info = gtk_recent_info_create_app_info (data->recent_info, prev_owners[i], &err);
++    if (!err && app_info)
++    {
++      name = g_strdup (g_app_info_get_name (app_info));
++    }
++    else
++    {
++      name = g_strdup (prev_owners[i]);
++      if (err)
++        g_error_free (err);
++    }
++    gchar *display_name = g_strdup_printf ("Previous user (%lu/%lu): %s", i+1, len, prev_owners[i]);
++    zeitgeist_event_add_subject (event, zeitgeist_subject_new_full (name,
++                                      ZEITGEIST_NFO_SOFTWARE,
++                                      ZEITGEIST_ZG_HEURISTIC_ACTIVITY,
++                                      "application/octet-stream",
++                                      NULL,
++                                      display_name,
++                                      NULL));
++    g_free (display_name);
++    g_free (name);
++  }
++  g_strfreev (prev_owners);
++  gtk_recent_info_unref (data->recent_info);
++
++  // Add metadata about the widget -- doesn't work (returns Widget, can crash bc/ unref'd dialog)
++/*  gchar *widget_uri = NULL;
++  if (GTK_IS_RECENT_CHOOSER_MENU (chooser))
++    widget_uri = ZG_INTERPRETATION_RECENT_GTK_MENU;
++  else if (GTK_IS_RECENT_CHOOSER_DIALOG (chooser))
++    widget_uri = ZG_INTERPRETATION_RECENT_GTK_DLG;
++  else
++    widget_uri = ZG_INTERPRETATION_RECENT_GTK_WDG;
++
++  gchar *widget_display = g_strdup_printf ("Widget type: %s", widget_uri);
++  zeitgeist_event_add_subject (event, zeitgeist_subject_new_full (widget_uri,
++                                  ZEITGEIST_NFO_SOFTWARE,
++                                  ZEITGEIST_ZG_HEURISTIC_ACTIVITY,
++                                  "application/octet-stream",
++                                  NULL,
++                                  widget_display,
++                                  NULL));
++  g_free (widget_display); */
++
++  // Add the UCL metadata
++  char *study_uri = g_strdup_printf ("activity://null///pid://%d///winid://%s///", getpid(), data->window_id);
++  zeitgeist_event_add_subject (event, zeitgeist_subject_new_full (study_uri,
++    ZEITGEIST_NFO_SOFTWARE,
++    ZEITGEIST_ZG_WORLD_ACTIVITY,
++    "application/octet-stream",
++    NULL,
++    "ucl-study-metadata",
++    NULL));
++  g_free (data->window_id);
++  g_free (study_uri);
++
++  // Send the event
++  zeitgeist_log_insert_events_no_reply (log, event, NULL);
++  g_free (data);
++}
++
++static void
++_log_zeitgeist_get_recent_file (GtkRecentChooser *chooser,
++                                gchar            *uri)
++{
++  // Test for RecentChooser and presence of files to track
++  g_return_if_fail (GTK_IS_RECENT_CHOOSER (chooser));
++  g_return_if_fail (uri != NULL);
++
++  GFile *file = g_file_new_for_uri (uri);
++  if (!file)
++  {
++    return;
++  }
++
++  _ZeitgeistRecentChooserData *data = g_malloc (sizeof (_ZeitgeistRecentChooserData));
++
++  data->window_id = gtk_recent_chooser_get_window_id (chooser);
++  data->recent_info = _gtk_recent_chooser_get_current_item (chooser, TRUE);
++
++  g_file_query_info_async (file,
++        G_FILE_ATTRIBUTE_STANDARD_DISPLAY_NAME ","
++        G_FILE_ATTRIBUTE_STANDARD_CONTENT_TYPE,
++        G_FILE_QUERY_INFO_NONE,
++        G_PRIORITY_DEFAULT,
++        NULL,
++        _log_zeitgeist_get_recent_file_cb, data);
++}
++
+ /**
+  * gtk_recent_chooser_set_current_uri:
+  * @chooser: a #GtkRecentChooser
+@@ -699,10 +908,22 @@ gtk_recent_chooser_set_current_uri (GtkR
+ 				    GError           **error)
+ {
+   g_return_val_if_fail (GTK_IS_RECENT_CHOOSER (chooser), FALSE);
+-  
++
+   return GTK_RECENT_CHOOSER_GET_IFACE (chooser)->set_current_uri (chooser, uri, error);
+ }
+ 
++gchar *
++_gtk_recent_chooser_get_current_uri (GtkRecentChooser *chooser, gboolean internal)
++{
++  g_return_val_if_fail (GTK_IS_RECENT_CHOOSER (chooser), NULL);
++  gchar *uri = GTK_RECENT_CHOOSER_GET_IFACE (chooser)->get_current_uri (chooser);
++
++  if (uri && !internal)
++    _log_zeitgeist_get_recent_file (chooser, uri);
++
++  return uri;
++}
++
+ /**
+  * gtk_recent_chooser_get_current_uri:
+  * @chooser: a #GtkRecentChooser
+@@ -716,9 +937,7 @@ gtk_recent_chooser_set_current_uri (GtkR
+ gchar *
+ gtk_recent_chooser_get_current_uri (GtkRecentChooser *chooser)
+ {
+-  g_return_val_if_fail (GTK_IS_RECENT_CHOOSER (chooser), NULL);
+-  
+-  return GTK_RECENT_CHOOSER_GET_IFACE (chooser)->get_current_uri (chooser);
++  return _gtk_recent_chooser_get_current_uri (chooser, FALSE);
+ }
+ 
+ /**
+@@ -735,21 +954,7 @@ gtk_recent_chooser_get_current_uri (GtkR
+ GtkRecentInfo *
+ gtk_recent_chooser_get_current_item (GtkRecentChooser *chooser)
+ {
+-  GtkRecentManager *manager;
+-  GtkRecentInfo *retval;
+-  gchar *uri;
+-  
+-  g_return_val_if_fail (GTK_IS_RECENT_CHOOSER (chooser), NULL);
+-  
+-  uri = gtk_recent_chooser_get_current_uri (chooser);
+-  if (!uri)
+-    return NULL;
+-  
+-  manager = _gtk_recent_chooser_get_recent_manager (chooser);
+-  retval = gtk_recent_manager_lookup_item (manager, uri, NULL);
+-  g_free (uri);
+-  
+-  return retval;
++  return _gtk_recent_chooser_get_current_item (chooser, FALSE);
+ }
+ 
+ /**
+@@ -1020,6 +1225,8 @@ _gtk_recent_chooser_item_activated (GtkR
+   g_return_if_fail (GTK_IS_RECENT_CHOOSER (chooser));
+   
+   g_signal_emit (chooser, chooser_signals[ITEM_ACTIVATED], 0);
++  gchar *uri = _gtk_recent_chooser_get_current_uri (chooser, TRUE);
++  g_free (uri);
+ }
+ 
+ void
+Index: gtk+3.0-3.14.13/gtk/gtkrecentchooser.h
+===================================================================
+--- gtk+3.0-3.14.13.orig/gtk/gtkrecentchooser.h
++++ gtk+3.0-3.14.13/gtk/gtkrecentchooser.h
+@@ -125,6 +125,8 @@ struct _GtkRecentChooserIface
+   /*< private >*/
+   GTypeInterface base_iface;
+ 
++  gchar *           (* get_window_id)      (GtkRecentChooser  *chooser);
++
+   /*< public >*/
+ 
+   /*
+Index: gtk+3.0-3.14.13/gtk/gtkrecentchooserdefault.c
+===================================================================
+--- gtk+3.0-3.14.13.orig/gtk/gtkrecentchooserdefault.c
++++ gtk+3.0-3.14.13/gtk/gtkrecentchooserdefault.c
+@@ -70,6 +70,9 @@
+ #include "gtkrecentchooserutils.h"
+ #include "gtkrecentchooserdefault.h"
+ 
++#ifdef GDK_WINDOWING_X11
++#include <gdk/gdkx.h>
++#endif
+ 
+ enum 
+ {
+@@ -186,6 +189,7 @@ static void     gtk_recent_chooser_defau
+ 
+ /* GtkRecentChooserIface */
+ static void              gtk_recent_chooser_iface_init                 (GtkRecentChooserIface  *iface);
++static gchar *           gtk_recent_chooser_default_get_window_id      (GtkRecentChooser       *chooser);
+ static gboolean          gtk_recent_chooser_default_set_current_uri    (GtkRecentChooser       *chooser,
+ 								        const gchar            *uri,
+ 								        GError                **error);
+@@ -303,6 +307,7 @@ G_GNUC_END_IGNORE_DEPRECATIONS;
+ static void
+ gtk_recent_chooser_iface_init (GtkRecentChooserIface *iface)
+ {
++  iface->get_window_id = gtk_recent_chooser_default_get_window_id;
+   iface->set_current_uri = gtk_recent_chooser_default_set_current_uri;
+   iface->get_current_uri = gtk_recent_chooser_default_get_current_uri;
+   iface->select_uri = gtk_recent_chooser_default_select_uri;
+@@ -1048,6 +1053,32 @@ scan_for_uri_cb (GtkTreeModel *model,
+   return FALSE;
+ }
+ 
++static gchar *gtk_recent_chooser_default_get_window_id (GtkRecentChooser *chooser)
++{
++  g_return_val_if_fail (GTK_IS_RECENT_CHOOSER_DEFAULT (chooser), NULL);
++
++  GtkRecentChooserDefaultPrivate *priv = GTK_RECENT_CHOOSER_DEFAULT (chooser)->priv;
++  gchar *window_id = NULL;
++
++  #ifdef GDK_WINDOWING_X11
++  if (priv->recent_view)
++  {
++    GdkWindow *gwin = gtk_widget_get_window (priv->recent_view);
++
++    GdkDisplay *dsp = NULL;
++    if (gwin)
++      dsp = gdk_window_get_display (gwin);
++
++    if (dsp && GDK_IS_X11_DISPLAY (dsp)) {
++      Window xid = (Window) gdk_x11_window_get_xid (gwin);
++      window_id = g_strdup_printf ("%lu", xid);
++    }
++  }
++  #endif
++
++  return window_id;
++}
++
+ static gboolean
+ gtk_recent_chooser_default_set_current_uri (GtkRecentChooser  *chooser,
+ 					    const gchar       *uri,
+@@ -1552,7 +1583,7 @@ remove_selected_from_list (GtkRecentChoo
+   if (impl->priv->select_multiple)
+     return;
+   
+-  uri = gtk_recent_chooser_get_current_uri (GTK_RECENT_CHOOSER (impl));
++  uri = _gtk_recent_chooser_get_current_uri (GTK_RECENT_CHOOSER (impl), TRUE);
+   if (!uri)
+     return;
+   
+Index: gtk+3.0-3.14.13/gtk/gtkrecentchooserdialog.c
+===================================================================
+--- gtk+3.0-3.14.13.orig/gtk/gtkrecentchooserdialog.c
++++ gtk+3.0-3.14.13/gtk/gtkrecentchooserdialog.c
+@@ -79,13 +79,6 @@
+  */
+ 
+ 
+-struct _GtkRecentChooserDialogPrivate
+-{
+-  GtkRecentManager *manager;
+-  
+-  GtkWidget *chooser;
+-};
+-
+ #define GTK_RECENT_CHOOSER_DIALOG_GET_PRIVATE(obj)	(GTK_RECENT_CHOOSER_DIALOG (obj)->priv)
+ 
+ static void gtk_recent_chooser_dialog_class_init (GtkRecentChooserDialogClass *klass);
+@@ -281,10 +274,24 @@ gtk_recent_chooser_dialog_new_valist (co
+                          "title", title,
+                          "recent-manager", manager,
+                          NULL);
+-  
+-  if (parent)
++
++  GtkRecentChooserDialogPrivate *priv = GTK_RECENT_CHOOSER_DIALOG (result)->priv;
++  priv->parent_xid = 0;
++
++  if (parent) {
+     gtk_window_set_transient_for (GTK_WINDOW (result), parent);
+-  
++
++    #ifdef GDK_WINDOWING_X11
++    GdkWindow *gwin = gtk_widget_get_window (GTK_WIDGET (parent));
++    GdkDisplay *dsp = NULL;
++      if (gwin)
++        dsp = gdk_window_get_display (gwin);
++
++      if (dsp && GDK_IS_X11_DISPLAY (dsp))
++        priv->parent_xid = (Window) gdk_x11_window_get_xid (gwin);
++    #endif
++  }
++
+   while (button_text)
+     {
+       response_id = va_arg (varargs, gint);
+Index: gtk+3.0-3.14.13/gtk/gtkrecentchooserdialog.h
+===================================================================
+--- gtk+3.0-3.14.13.orig/gtk/gtkrecentchooserdialog.h
++++ gtk+3.0-3.14.13/gtk/gtkrecentchooserdialog.h
+@@ -26,6 +26,10 @@
+ #include <gtk/gtkdialog.h>
+ #include <gtk/gtkrecentchooser.h>
+ 
++#ifdef GDK_WINDOWING_X11
++#include <gdk/gdkx.h>
++#endif
++
+ G_BEGIN_DECLS
+ 
+ #define GTK_TYPE_RECENT_CHOOSER_DIALOG		  (gtk_recent_chooser_dialog_get_type ())
+@@ -40,6 +44,16 @@ typedef struct _GtkRecentChooserDialogCl
+ 
+ typedef struct _GtkRecentChooserDialogPrivate GtkRecentChooserDialogPrivate;
+ 
++struct _GtkRecentChooserDialogPrivate
++{
++  GtkRecentManager *manager;
++
++  GtkWidget *chooser;
++
++#ifdef GDK_WINDOWING_X11
++  Window parent_xid;
++#endif
++};
+ 
+ struct _GtkRecentChooserDialog
+ {
+Index: gtk+3.0-3.14.13/gtk/gtkrecentchoosermenu.c
+===================================================================
+--- gtk+3.0-3.14.13.orig/gtk/gtkrecentchoosermenu.c
++++ gtk+3.0-3.14.13/gtk/gtkrecentchoosermenu.c
+@@ -42,6 +42,10 @@
+ #include "gtktypebuiltins.h"
+ #include "gtkprivate.h"
+ 
++#ifdef GDK_WINDOWING_X11
++#include <gdk/gdkx.h>
++#endif
++
+ /**
+  * SECTION:gtkrecentchoosermenu
+  * @Short_description: Displays recently used files in a menu
+@@ -133,6 +137,7 @@ static void gtk_recent_chooser_menu_get_
+ 						  GValue       *value,
+ 						  GParamSpec   *pspec);
+ 
++static gchar *           gtk_recent_chooser_menu_get_window_id    (GtkRecentChooser  *chooser);
+ static gboolean          gtk_recent_chooser_menu_set_current_uri    (GtkRecentChooser  *chooser,
+ 							             const gchar       *uri,
+ 							             GError           **error);
+@@ -191,6 +196,7 @@ G_GNUC_END_IGNORE_DEPRECATIONS;
+ static void
+ gtk_recent_chooser_iface_init (GtkRecentChooserIface *iface)
+ {
++  iface->get_window_id = gtk_recent_chooser_menu_get_window_id;
+   iface->set_current_uri = gtk_recent_chooser_menu_set_current_uri;
+   iface->get_current_uri = gtk_recent_chooser_menu_get_current_uri;
+   iface->select_uri = gtk_recent_chooser_menu_select_uri;
+@@ -493,6 +499,32 @@ gtk_recent_chooser_menu_get_property (GO
+     }
+ }
+ 
++static gchar *gtk_recent_chooser_menu_get_window_id (GtkRecentChooser *chooser)
++{
++  g_return_val_if_fail (GTK_IS_RECENT_CHOOSER_MENU (chooser), NULL);
++
++  GtkWidget *attach = gtk_menu_get_attach_widget (GTK_MENU (chooser));
++  gchar *window_id = NULL;
++
++  #ifdef GDK_WINDOWING_X11
++  if (attach)
++  {
++    GdkWindow *gwin = gtk_widget_get_window (attach);
++
++    GdkDisplay *dsp = NULL;
++    if (gwin)
++      dsp = gdk_window_get_display (gwin);
++
++    if (dsp && GDK_IS_X11_DISPLAY (dsp)) {
++      Window xid = (Window) gdk_x11_window_get_xid (gwin);
++      window_id = g_strdup_printf ("%lu", xid);
++    }
++  }
++  #endif
++
++  return window_id;
++}
++
+ static gboolean
+ gtk_recent_chooser_menu_set_current_uri (GtkRecentChooser  *chooser,
+ 					 const gchar       *uri,
+Index: gtk+3.0-3.14.13/gtk/gtkrecentchooserprivate.h
+===================================================================
+--- gtk+3.0-3.14.13.orig/gtk/gtkrecentchooserprivate.h
++++ gtk+3.0-3.14.13/gtk/gtkrecentchooserprivate.h
+@@ -48,6 +48,8 @@ void              _gtk_recent_chooser_se
+ 								 gboolean           use_appearance);
+ gboolean          _gtk_recent_chooser_get_use_action_appearance (GtkRecentChooser  *recent_chooser);
+ 
++gchar *        _gtk_recent_chooser_get_current_uri  (GtkRecentChooser  *chooser, gboolean internal);
++
+ G_END_DECLS
+ 
+ #endif /* ! __GTK_RECENT_CHOOSER_PRIVATE_H__ */
+Index: gtk+3.0-3.14.13/gtk/gtkrecentchooserutils.c
+===================================================================
+--- gtk+3.0-3.14.13.orig/gtk/gtkrecentchooserutils.c
++++ gtk+3.0-3.14.13/gtk/gtkrecentchooserutils.c
+@@ -25,6 +25,12 @@
+ #include "config.h"
+ 
+ #include "gtkrecentchooserutils.h"
++#include "gtkrecentchooserwidget.h"
++#include "gtkrecentchooserdialog.h"
++
++#ifdef GDK_WINDOWING_X11
++#include <gdk/gdkx.h>
++#endif
+ 
+ /* Methods */
+ static void      delegate_set_sort_func              (GtkRecentChooser  *chooser,
+@@ -45,6 +51,7 @@ static GList    *delegate_get_items
+ static GtkRecentManager *delegate_get_recent_manager (GtkRecentChooser  *chooser);
+ static void      delegate_select_all                 (GtkRecentChooser  *chooser);
+ static void      delegate_unselect_all               (GtkRecentChooser  *chooser);
++static gchar *   delegate_get_window_id              (GtkRecentChooser  *chooser);
+ static gboolean  delegate_set_current_uri            (GtkRecentChooser  *chooser,
+ 						      const gchar       *uri,
+ 						      GError           **error);
+@@ -119,6 +126,7 @@ _gtk_recent_chooser_install_properties (
+ void
+ _gtk_recent_chooser_delegate_iface_init (GtkRecentChooserIface *iface)
+ {
++  iface->get_window_id = delegate_get_window_id;
+   iface->set_current_uri = delegate_set_current_uri;
+   iface->get_current_uri = delegate_get_current_uri;
+   iface->select_uri = delegate_select_uri;
+@@ -251,6 +259,36 @@ delegate_unselect_all (GtkRecentChooser
+   gtk_recent_chooser_unselect_all (get_delegate (chooser));
+ }
+ 
++static gchar *
++delegate_get_window_id (GtkRecentChooser  *chooser)
++{
++  gchar *window_id = NULL;
++
++  #ifdef GDK_WINDOWING_X11
++  if (GTK_IS_RECENT_CHOOSER_DIALOG (chooser))
++  {
++    GtkRecentChooserDialogPrivate *dlgpriv = (GTK_RECENT_CHOOSER_DIALOG (chooser))->priv;
++    if (dlgpriv->parent_xid)
++      window_id = g_strdup_printf ("%lu", dlgpriv->parent_xid);
++  }
++  else if (GTK_IS_RECENT_CHOOSER_WIDGET (chooser))
++  {
++    GdkWindow *gwin = gtk_widget_get_window (GTK_WIDGET (chooser));
++
++    GdkDisplay *dsp = NULL;
++    if (gwin)
++      dsp = gdk_window_get_display (gwin);
++
++    if (dsp && GDK_IS_X11_DISPLAY (dsp)) {
++      Window xid = (Window) gdk_x11_window_get_xid (gwin);
++      window_id = g_strdup_printf ("%lu", xid);
++    }
++  }
++  #endif
++
++  return window_id;
++}
++
+ static gboolean
+ delegate_set_current_uri (GtkRecentChooser  *chooser,
+ 			  const gchar       *uri,
+@@ -262,7 +300,8 @@ delegate_set_current_uri (GtkRecentChoos
+ static gchar *
+ delegate_get_current_uri (GtkRecentChooser *chooser)
+ {
+-  return gtk_recent_chooser_get_current_uri (get_delegate (chooser));
++  GtkRecentChooser *delegate = get_delegate (chooser);
++  return _gtk_recent_chooser_get_current_uri (delegate, TRUE);
+ }
+ 
+ static void
