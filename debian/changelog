@@ -1,3 +1,10 @@
+gtk+3.0 (3.14.13-0ubuntu1ppa2) vivid; urgency=medium
+
+  * UCL Study: clipboard events + entry and text view additional paste events
+  * Readding the file dialog example which mysteriously disappeared
+
+ -- Steve Dodier-Lazaro <sidnioulz@gmail.com>  Sun, 07 Jun 2015 18:16:22 +0100
+
 gtk+3.0 (3.14.13-0ubuntu1ppa1) vivid; urgency=medium
 
   * UCL study: adding events for open/save and programmatic file access in file dialogs

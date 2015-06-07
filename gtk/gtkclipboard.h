@@ -26,6 +26,10 @@
 
 #include <gtk/gtkselection.h>
 
+#define ZG_INTERPRETATION_CLIPBOARD_COPY     "activity://gui-toolkit/gtk3/Clipboard/Copy"
+#define ZG_INTERPRETATION_CLIPBOARD_PASTE    "activity://gui-toolkit/gtk3/Clipboard/Paste"
+#define ZG_INTERPRETATION_DATA_CLIPBOARD     "activity://gui-toolkit/gtk3/Clipboard/ContentType"
+
 G_BEGIN_DECLS
 
 #define GTK_TYPE_CLIPBOARD            (gtk_clipboard_get_type ())

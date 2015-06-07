@@ -58,6 +58,10 @@
 #include "gtkpixelcacheprivate.h"
 #include "gtkmagnifierprivate.h"
 
+#include <zeitgeist.h>
+#include "gtkclipboardprivate.h"
+#include "zgtrackutils.h"
+
 #include "a11y/gtktextviewaccessibleprivate.h"
 
 /**
@@ -6555,11 +6559,63 @@ gtk_text_view_copy_clipboard (GtkTextView *text_view)
 }
 
 static void
+_log_zeitgeist_event_paste (GtkClipboard *clipboard,
+                            GtkTextView *view)
+{
+  // Ignore PRIMARY (but try to process when there is no selection, e.g. the selection's owner died)
+  if (clipboard->have_selection && clipboard->selection != GDK_SELECTION_CLIPBOARD)
+    return;
+
+  // Get access to Zeitgeist logger daemon
+  ZeitgeistLog *log = zeitgeist_log_get_default ();
+
+  // Create the event to be added, with the known information
+  gchar *actor_name = _get_actor_name_from_pid (getpid());
+  ZeitgeistEvent *event = zeitgeist_event_new_full (
+              ZG_INTERPRETATION_CLIPBOARD_PASTE,
+              ZEITGEIST_ZG_USER_ACTIVITY,
+              actor_name,
+              NULL);
+  g_free (actor_name);
+
+  //TODO make private function in buffer that returns the copied length to the callback
+  gchar       *uri                   = g_strdup_printf ("clipboard://%s/len:n/a", "UTF8_STRING");
+  gchar       *display_name          = "Clipboard content";
+
+  // Add the subject now that all information has been calculated
+  zeitgeist_event_add_subject (event, zeitgeist_subject_new_full(uri,
+                                   ZG_INTERPRETATION_DATA_CLIPBOARD,
+                                   ZEITGEIST_NFO_SOFTWARE_SERVICE,
+                                   "UTF8_STRING",
+                                   NULL,
+                                   display_name,
+                                   NULL));
+  g_free (uri);
+
+  // Add the UCL metadata
+  char *window_id = _get_window_id_from_widget (GTK_WIDGET (view));
+  char *study_uri = g_strdup_printf ("activity://null///pid://%d///winid://%s///", getpid(), window_id);
+  zeitgeist_event_add_subject (event, zeitgeist_subject_new_full (study_uri,
+                                        ZEITGEIST_NFO_SOFTWARE,
+                                        ZEITGEIST_ZG_WORLD_ACTIVITY,
+                                        "application/octet-stream",
+                                        NULL,
+                                        "ucl-study-metadata",
+                                        NULL));
+  g_free (study_uri);
+  g_free (window_id);
+
+  zeitgeist_log_insert_events_no_reply (log, event, NULL);
+}
+
+static void
 gtk_text_view_paste_clipboard (GtkTextView *text_view)
 {
   GtkClipboard *clipboard = gtk_widget_get_clipboard (GTK_WIDGET (text_view),
 						      GDK_SELECTION_CLIPBOARD);
-  
+
+  _log_zeitgeist_event_paste (clipboard, text_view);
+
   gtk_text_buffer_paste_clipboard (get_buffer (text_view),
 				   clipboard,
 				   NULL,

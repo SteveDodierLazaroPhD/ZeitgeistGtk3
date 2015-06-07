@@ -678,6 +678,7 @@ gtk_private_h_sources =		\
 	gtkwin32themeprivate.h	\
 	gtkwindowprivate.h	\
 	gtktreemenu.h		\
+	zgtrackutils.h		\
 	$(gtk_private_type_h_sources) \
 	$(gtk_clipboard_dnd_h_sources)
 
@@ -1094,6 +1095,7 @@ gtk_base_c_sources = 		\
 	gtkwindow.c		\
 	gtkwindowgroup.c	\
 	gtkwin32theme.c		\
+	zgtrackutils.c		\
 	$(gtk_clipboard_dnd_c_sources)
 
 nodist_gtk_c_sources =

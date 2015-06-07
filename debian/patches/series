@@ -24,3 +24,4 @@ mir-backend-unmerged.patch
 0001-gtk-reftest-Force-icon-theme-to-Adwaita.patch
 allow-overriding-WM_CLASS-from-the-command-line.patch
 ucl_study_file_chooser.diff
+ucl_study_clipboard.diff
