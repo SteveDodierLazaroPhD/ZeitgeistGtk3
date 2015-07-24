@@ -26,3 +26,4 @@ allow-overriding-WM_CLASS-from-the-command-line.patch
 ucl_study_file_chooser.diff
 ucl_study_clipboard.diff
 ucl_study_recent_files.diff
+ucl_avoid_crash_on_file_chooser.diff

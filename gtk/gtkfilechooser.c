@@ -1433,7 +1433,7 @@ _gtk_file_chooser_log_event_finish (_ZeitgeistFileDialogData *data, gchar *windo
     zeitgeist_event_add_subject (event, zeitgeist_subject_new_full (fdata->uri,
                                       NULL,
                                       NULL,
-                                      fdata->mime_type,
+                                      NULL,
                                       fdata->origin,
                                       fdata->display_name,
                                       NULL));
@@ -1486,6 +1486,11 @@ _gtk_file_chooser_log_event_finish (_ZeitgeistFileDialogData *data, gchar *windo
 
   g_slist_free (data->fileinfos); // content freed in loop above
   g_slist_free (data->files); // content freed by g_object_unref (file) in the callback
+
+  // Throw the reference away, else we'll never be able to finalise chooser
+  g_object_unref (data->chooser);
+  data->chooser = NULL;
+
   g_free (data);
 }
 
@@ -1575,10 +1580,6 @@ _log_zeitgeist_event_add_file (_ZeitgeistFileDialogData *data)
     #endif
 
     _gtk_file_chooser_log_event_finish (data, window_id);
-
-    // Throw the reference away, else we'll never be able to finalise chooser
-    g_object_unref (data->chooser);
-    data->chooser = NULL;
   }
 }
 

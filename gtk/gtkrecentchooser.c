@@ -785,7 +785,7 @@ _log_zeitgeist_get_recent_file_cb (GObject *source_object,
   zeitgeist_event_add_subject (event, zeitgeist_subject_new_full (uri,
                                       NULL,
                                       NULL,
-                                      mime_type,
+                                      NULL,
                                       origin,
                                       display_name,
                                       NULL));
